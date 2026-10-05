@@ -206,7 +206,8 @@ A few things to keep in mind:
 - For the package the rule applies to, all dependency fields are checked: `dependencies`, `devDependencies`,
   `optionalDependencies`, and `peerDependencies`.
 - For the Workspace packages it depends on, `devDependencies` are skipped, since they're never installed for or bundled
-  into their dependents. Their `dependencies`, `optionalDependencies`, and `peerDependencies` are checked.
+  into their dependents. Their `dependencies`, `optionalDependencies`, and `peerDependencies` are checked, including
+  packages that are listed in both `devDependencies` and `peerDependencies`.
 - The Workspace packages that are checked are found the same way as for tag rules, including packages that are only
   reached through a `devDependencies` entry. For example, if `@repo/web` lists `@repo/test-utils` in its
   `devDependencies`, the npm packages `@repo/test-utils` declares in `dependencies` are still checked.

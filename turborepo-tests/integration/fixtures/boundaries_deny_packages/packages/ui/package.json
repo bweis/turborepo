@@ -5,7 +5,12 @@
     "@repo/utils": "*",
     "pg-format": "^1.0.0"
   },
+  "devDependencies": {
+    "drizzle-orm": "^0.40.0",
+    "react": "^19.0.0"
+  },
   "peerDependencies": {
+    "drizzle-orm": "^0.40.0",
     "react": "^19.0.0"
   }
 }

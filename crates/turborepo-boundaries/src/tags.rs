@@ -216,11 +216,12 @@ impl DeniedPackages {
                 let dependency = declaration.declaration_name();
                 let aliased_package = aliased_package(declaration);
                 let pattern = self.find_match(dependency, aliased_package)?;
+                let kind = effective_dependency_kind(graph, package, declaration);
                 Some(DeniedDeclaration {
                     dependency: dependency.to_string(),
                     aliased_package: aliased_package.map(str::to_string),
-                    dependency_kind: dependency_kind_field(declaration.kind()),
-                    is_dev_dependency: declaration.kind() == DependencyKind::Development,
+                    dependency_kind: dependency_kind_field(kind),
+                    is_dev_dependency: kind == DependencyKind::Development,
                     pattern,
                 })
             })
@@ -265,6 +266,23 @@ fn aliased_package(declaration: &ExternalDeclaration) -> Option<&str> {
     npm_alias_target(declaration.specifier())
         .or(Some(declaration.package_name()))
         .filter(|name| *name != declaration_name)
+}
+
+/// The kind to treat a declaration as: the first non-`devDependencies` field
+/// it's declared in, or `devDependencies` if that's the only one. Libraries
+/// commonly list a peer in both `devDependencies` and `peerDependencies`, and
+/// `external_declarations` only records the first field (`devDependencies`).
+fn effective_dependency_kind<G: PackageGraphProvider>(
+    graph: &G,
+    package: &PackageName,
+    declaration: &ExternalDeclaration,
+) -> DependencyKind {
+    graph
+        .dependency_declaration_kinds(package, declaration.declaration_name())
+        .into_iter()
+        .chain(std::iter::once(declaration.kind()))
+        .find(|kind| *kind != DependencyKind::Development)
+        .unwrap_or(DependencyKind::Development)
 }
 
 fn dependency_kind_field(kind: DependencyKind) -> &'static str {
@@ -815,6 +833,8 @@ mod tests {
         deps: HashMap<PackageNode, Vec<PackageNode>>,
         ancestors: HashMap<PackageNode, Vec<PackageNode>>,
         external_declarations: Vec<ExternalDeclaration>,
+        /// `(package, declaration name)` -> every field it's declared in.
+        declaration_kinds: HashMap<(String, String), Vec<DependencyKind>>,
     }
 
     impl MockGraph {
@@ -824,6 +844,7 @@ mod tests {
                 deps: HashMap::new(),
                 ancestors: HashMap::new(),
                 external_declarations: Vec::new(),
+                declaration_kinds: HashMap::new(),
             }
         }
 
@@ -843,6 +864,15 @@ mod tests {
                 "^1.0.0",
                 kind,
             );
+        }
+
+        /// Declares `name` in several fields of `package`'s package.json.
+        /// Like the real graph, the external declaration keeps only the first
+        /// field in manifest order.
+        fn add_external_in_fields(&mut self, package: &str, name: &str, kinds: &[DependencyKind]) {
+            self.add_external(package, name, name, kinds[0]);
+            self.declaration_kinds
+                .insert((package.to_string(), name.to_string()), kinds.to_vec());
         }
 
         fn add_external_with_specifier(
@@ -923,6 +953,17 @@ mod tests {
                 &self.external_declarations,
                 name.as_str(),
             )
+        }
+
+        fn dependency_declaration_kinds(
+            &self,
+            package: &PackageName,
+            declaration_name: &str,
+        ) -> Vec<DependencyKind> {
+            self.declaration_kinds
+                .get(&(package.to_string(), declaration_name.to_string()))
+                .cloned()
+                .unwrap_or_default()
         }
 
         fn immediate_dependencies(&self, _node: &PackageNode) -> Option<HashSet<&PackageNode>> {
@@ -2215,6 +2256,91 @@ mod tests {
         cached.sort();
         assert_eq!(cached, vec!["admin", "db", "web"]);
         assert_eq!(cache[&PackageName::Other("db".into())].len(), 1);
+    }
+
+    #[test]
+    fn deny_packages_checks_workspace_dependency_peer_also_in_dev_dependencies() {
+        // Libraries commonly declare a peer in both devDependencies and
+        // peerDependencies. The peer is still checked for workspace
+        // dependencies, and reported as a peer dependency.
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_external_in_fields(
+            "db",
+            "drizzle-orm",
+            &[
+                DependencyKind::Development,
+                DependencyKind::Peer { optional: false },
+            ],
+        );
+        let (rules, _) = deny_packages_rule(&["drizzle-*"]);
+
+        let diagnostics = check_browser_package(&graph, &rules, "web");
+
+        assert_eq!(
+            denied_packages(&diagnostics),
+            vec![(
+                "db".to_string(),
+                "drizzle-orm".to_string(),
+                "peerDependencies",
+                "drizzle-*".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn deny_packages_checks_workspace_dependency_in_dependencies_and_dev_dependencies() {
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_external_in_fields(
+            "db",
+            "pg",
+            &[DependencyKind::Production, DependencyKind::Development],
+        );
+        let (rules, _) = deny_packages_rule(&["pg"]);
+
+        let diagnostics = check_browser_package(&graph, &rules, "web");
+
+        assert_eq!(
+            denied_packages(&diagnostics),
+            vec![(
+                "db".to_string(),
+                "pg".to_string(),
+                "dependencies",
+                "pg".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn deny_packages_reports_non_dev_field_for_own_dependencies() {
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_external_in_fields(
+            "web",
+            "pg",
+            &[
+                DependencyKind::Development,
+                DependencyKind::Peer { optional: true },
+            ],
+        );
+        let (rules, _) = deny_packages_rule(&["pg"]);
+
+        let diagnostics = check_browser_package(&graph, &rules, "web");
+
+        assert_eq!(
+            denied_packages(&diagnostics),
+            vec![(
+                "web".to_string(),
+                "pg".to_string(),
+                "peerDependencies",
+                "pg".to_string()
+            )]
+        );
     }
 
     #[test]
