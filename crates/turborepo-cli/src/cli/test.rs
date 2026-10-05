@@ -2229,6 +2229,9 @@ fn test_no_run_args_before_boundaries(args: &[&str], is_okay: bool) {
 #[test_case::test_case(&["turbo", "boundaries", "--ignore=all"], true; "with ignore all")]
 #[test_case::test_case(&["turbo", "boundaries", "--ignore=prompt"], true; "with ignore prompt")]
 #[test_case::test_case(&["turbo", "boundaries", "--filter", "ui"], true; "with filter")]
+#[test_case::test_case(&["turbo", "boundaries", "--update-baseline"], true; "with update baseline")]
+#[test_case::test_case(&["turbo", "boundaries", "--update-baseline", "--filter", "ui"], true; "with update baseline and filter")]
+#[test_case::test_case(&["turbo", "boundaries", "--update-baseline", "--ignore=all"], false; "update baseline conflicts with ignore")]
 fn test_boundaries(args: &[&str], is_okay: bool) {
     let os_args = args.iter().map(|s| OsString::from(*s)).collect();
     let cli = Args::parse_args(os_args);

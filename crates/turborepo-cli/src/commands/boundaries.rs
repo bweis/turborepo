@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use dialoguer::{Confirm, Input};
 use miette::{Report, SourceSpan};
 use turbopath::AbsoluteSystemPath;
-use turborepo_boundaries::{BoundariesChecker, BoundariesContext};
+use turborepo_boundaries::{
+    Baseline, BaselineScope, BoundariesChecker, BoundariesContext, ViolationKey,
+};
 use turborepo_run::{boundaries::RunTurboJsonProvider, builder::RunBuilder};
 use turborepo_signals::{SignalHandler, listeners::get_signal};
 use turborepo_telemetry::events::command::CommandEventBuilder;
@@ -16,6 +18,7 @@ pub async fn run(
     telemetry: CommandEventBuilder,
     ignore: Option<BoundariesIgnore>,
     reason: Option<String>,
+    update_baseline: bool,
 ) -> Result<i32, cli::Error> {
     let signal = get_signal()?;
     let handler = SignalHandler::new(signal);
@@ -38,7 +41,55 @@ pub async fn run(
         root_boundaries_config,
         filtered_pkgs: run.filtered_pkgs(),
     };
-    let result = BoundariesChecker::check_boundaries(&ctx, true)?;
+    let (baseline_path, baseline_display_path) =
+        Baseline::path(run.repo_root(), root_boundaries_config)?;
+    // Loading the baseline before checking means a malformed baseline is
+    // reported without waiting for the whole check to finish.
+    let baseline = Baseline::load(&baseline_path)?;
+    let scope = BaselineScope::from_context(&ctx);
+
+    let mut result = BoundariesChecker::check_boundaries(&ctx, true)?;
+
+    if update_baseline {
+        let current = Baseline::from_diagnostics(run.repo_root(), &result.diagnostics);
+        let baselined_count = current.len();
+        // With `--filter`, entries for packages that weren't checked are kept.
+        let updated = match &baseline {
+            Some(baseline) => baseline.update(current, &scope),
+            None => current,
+        };
+        // Don't create an empty baseline file in a repository without
+        // violations, but do keep an existing one in sync.
+        let write = baseline.is_some() || !updated.is_empty();
+        if write {
+            updated.write(&baseline_path)?;
+        }
+
+        // Diagnostics that can't be baselined still need to be fixed.
+        result.diagnostics.retain(|diagnostic| {
+            ViolationKey::from_diagnostic(run.repo_root(), diagnostic).is_none()
+        });
+        result.suppressed_by_baseline += baselined_count;
+        result.emit(run.color_config());
+        if write {
+            println!(
+                "{} {} with {} {}",
+                color!(run.color_config(), BOLD_GREEN, "Updated"),
+                baseline_display_path,
+                updated.len(),
+                if updated.len() == 1 {
+                    "violation"
+                } else {
+                    "violations"
+                }
+            );
+        }
+        return Ok(if result.is_ok() { 0 } else { 1 });
+    }
+
+    if let Some(baseline) = &baseline {
+        baseline.apply(run.repo_root(), &baseline_display_path, &scope, &mut result);
+    }
 
     if let Some(ignore) = ignore {
         let mut patches: HashMap<&AbsoluteSystemPath, Vec<(SourceSpan, String)>> = HashMap::new();

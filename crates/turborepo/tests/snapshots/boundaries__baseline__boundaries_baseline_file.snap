@@ -1,0 +1,80 @@
+---
+source: crates/turborepo/tests/boundaries.rs
+expression: baseline
+---
+{
+  "version": 1,
+  "violations": {
+    "my-app": [
+      {
+        "rule": "denied-tag",
+        "package": "@vercel/unsafe-package",
+        "tag": "unsafe",
+        "count": 1
+      },
+      {
+        "rule": "tag-not-in-allowlist",
+        "package": "another",
+        "count": 1
+      },
+      {
+        "rule": "tag-not-in-allowlist",
+        "package": "module-package",
+        "count": 1
+      },
+      {
+        "rule": "tag-not-in-allowlist",
+        "package": "utils",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/import-attributes.js",
+        "rule": "import-leaves-package",
+        "import": "../../packages/utils/data.json",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/index.ts",
+        "rule": "import-leaves-package",
+        "import": "../../packages/another/index.jsx",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/index.ts",
+        "rule": "not-type-only-import",
+        "import": "@types/ship",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/index.ts",
+        "rule": "not-type-only-import",
+        "import": "ship",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/index.ts",
+        "rule": "package-not-found",
+        "import": "module-package",
+        "count": 2
+      },
+      {
+        "file": "apps/my-app/index.ts",
+        "rule": "package-not-found",
+        "import": "utils",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/types.ts",
+        "rule": "import-leaves-package",
+        "import": "!",
+        "count": 1
+      },
+      {
+        "file": "apps/my-app/types.ts",
+        "rule": "import-leaves-package",
+        "import": "@/../../packages/another/index.jsx",
+        "count": 1
+      }
+    ]
+  }
+}

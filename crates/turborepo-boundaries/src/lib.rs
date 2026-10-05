@@ -1,6 +1,7 @@
 // miette's derive macro causes false positives for these lints
 #![allow(unused_assignments)]
 
+mod baseline;
 mod config;
 mod imports;
 mod tags;
@@ -12,6 +13,9 @@ use std::{
     sync::Arc,
 };
 
+pub use baseline::{
+    BASELINE_VERSION, Baseline, BaselineScope, DEFAULT_BASELINE_PATH, ViolationKey,
+};
 pub use config::{BoundariesConfig, Permissions, Rule, RulesMap};
 use globwalk::{Settings, ValidatedGlob};
 use indicatif::ProgressBar;
@@ -226,6 +230,8 @@ pub enum BoundariesDiagnostic {
     #[help("add `type` to the import declaration")]
     NotTypeOnlyImport {
         path: AbsoluteSystemPathBuf,
+        // The package containing the importing file
+        package_name: PackageName,
         import: String,
         #[label("package imported here")]
         span: SourceSpan,
@@ -235,6 +241,8 @@ pub enum BoundariesDiagnostic {
     #[error("cannot import package `{name}` because it is not a dependency")]
     PackageNotFound {
         path: AbsoluteSystemPathBuf,
+        // The package containing the importing file
+        package_name: PackageName,
         name: String,
         #[label("package imported here")]
         span: SourceSpan,
@@ -259,6 +267,21 @@ pub enum BoundariesDiagnostic {
     ParseError(AbsoluteSystemPathBuf, String),
     #[error("Circular package dependency detected: {cycle_path}")]
     CircularDependency { cycle_path: String },
+    #[error(
+        "Stale entry in boundaries baseline `{baseline_path}` for package `{package}`: {entry} \
+         (baselined: {baselined_count}, found: {found_count})"
+    )]
+    #[diagnostic(help(
+        "a baselined violation was fixed. Run `turbo boundaries --update-baseline` to remove it \
+         from the baseline so that it cannot be reintroduced"
+    ))]
+    StaleBaselineEntry {
+        baseline_path: String,
+        package: String,
+        entry: String,
+        baselined_count: usize,
+        found_count: usize,
+    },
 }
 
 #[derive(Debug, Error, Diagnostic)]
@@ -279,9 +302,41 @@ pub enum Error {
     FileNotFound(AbsoluteSystemPathBuf),
     #[error("failed to write to file: {0}")]
     FileWrite(AbsoluteSystemPathBuf),
+    #[error("invalid boundaries baseline `{path}`: {reason}")]
+    #[diagnostic(help(
+        "fix the file, or delete it and regenerate it with `turbo boundaries --update-baseline`"
+    ))]
+    InvalidBaseline { path: String, reason: String },
+    #[error(
+        "invalid `boundaries.baseline` path `{path}`: expected a path relative to the repository \
+         root"
+    )]
+    InvalidBaselinePath { path: String },
+    #[error("failed to serialize boundaries baseline: {0}")]
+    SerializeBaseline(#[source] serde_json::Error),
 }
 
 impl BoundariesDiagnostic {
+    /// A stable, kebab-case identifier for the kind of violation this
+    /// diagnostic reports. Unlike the human readable message, rule ids are
+    /// part of turbo's public interface (they are written to the boundaries
+    /// baseline file) and must not change.
+    pub fn rule_id(&self) -> &'static str {
+        match self {
+            Self::PackageBoundariesHasTags { .. } => "package-boundaries-has-tags",
+            Self::TagSharesPackageName { .. } => "tag-shares-package-name",
+            Self::InvalidPath { .. } => "invalid-path",
+            Self::NoTagInAllowlist { .. } => "tag-not-in-allowlist",
+            Self::DeniedTag { .. } => "denied-tag",
+            Self::NotTypeOnlyImport { .. } => "not-type-only-import",
+            Self::PackageNotFound { .. } => "package-not-found",
+            Self::ImportLeavesPackage { .. } => "import-leaves-package",
+            Self::ParseError(..) => "parse-error",
+            Self::CircularDependency { .. } => "circular-dependency",
+            Self::StaleBaselineEntry { .. } => "stale-baseline-entry",
+        }
+    }
+
     pub fn path_and_span(&self) -> Option<(&AbsoluteSystemPath, SourceSpan)> {
         match self {
             Self::ImportLeavesPackage { path, span, .. } => Some((path, *span)),
@@ -331,6 +386,9 @@ pub struct BoundariesResult {
     pub packages_checked: usize,
     pub warnings: Vec<String>,
     pub diagnostics: Vec<BoundariesDiagnostic>,
+    /// Number of violations that were found but suppressed because they are
+    /// recorded in the boundaries baseline.
+    pub suppressed_by_baseline: usize,
 }
 
 impl BoundariesResult {
@@ -343,6 +401,7 @@ impl BoundariesResult {
         self.packages_checked += other.packages_checked;
         self.warnings.extend(other.warnings);
         self.diagnostics.extend(other.diagnostics);
+        self.suppressed_by_baseline += other.suppressed_by_baseline;
     }
 
     pub fn emit(&self, color_config: ColorConfig) {
@@ -371,9 +430,14 @@ impl BoundariesResult {
             eprintln!();
         }
 
+        let suppressed_message = match self.suppressed_by_baseline {
+            0 => String::new(),
+            n => format!(" ({n} suppressed by baseline)"),
+        };
+
         println!(
-            "Checked {} files in {} packages, {}",
-            self.files_checked, self.packages_checked, result_message
+            "Checked {} files in {} packages, {}{}",
+            self.files_checked, self.packages_checked, result_message, suppressed_message
         );
     }
 }
@@ -990,6 +1054,7 @@ mod tests {
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "a -> b -> a".into(),
             }],
+            suppressed_by_baseline: 1,
         };
         let b = BoundariesResult {
             files_checked: 3,
@@ -998,6 +1063,7 @@ mod tests {
             diagnostics: vec![BoundariesDiagnostic::InvalidPath {
                 path: "/bad".into(),
             }],
+            suppressed_by_baseline: 2,
         };
 
         a.merge(b);
@@ -1006,6 +1072,7 @@ mod tests {
         assert_eq!(a.packages_checked, 3);
         assert_eq!(a.warnings.len(), 3);
         assert_eq!(a.diagnostics.len(), 2);
+        assert_eq!(a.suppressed_by_baseline, 3);
     }
 
     #[test]
@@ -1017,6 +1084,7 @@ mod tests {
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "x -> y -> x".into(),
             }],
+            suppressed_by_baseline: 0,
         };
 
         result.merge(BoundariesResult::default());

@@ -44,6 +44,17 @@ pub struct BoundariesConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dependents: Option<Spanned<Permissions>>,
+
+    /// Path to the boundaries baseline file, relative to the repository root.
+    ///
+    /// The baseline records existing violations so that `turbo boundaries`
+    /// only fails on new ones. Generate or update it with `turbo boundaries
+    /// --update-baseline`. Only valid in the root `turbo.json`.
+    ///
+    /// Defaults to `boundaries-baseline.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub baseline: Option<Spanned<String>>,
 }
 
 /// A map of tag names to their boundary rules.
@@ -104,6 +115,7 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        self.baseline.add_text(text);
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -120,6 +132,7 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_path(path.clone());
             }
         }
+        self.baseline.add_path(path);
     }
 }
 

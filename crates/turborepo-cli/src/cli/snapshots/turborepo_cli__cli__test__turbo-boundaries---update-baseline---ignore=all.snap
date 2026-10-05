@@ -1,0 +1,9 @@
+---
+source: crates/turborepo-cli/src/cli/test.rs
+expression: err
+---
+error: the argument '--update-baseline' cannot be used with '--ignore'
+
+Usage: turbo boundaries [FLAGS]
+
+For more information, try '--help'.

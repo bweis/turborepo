@@ -32,6 +32,7 @@ const PACKAGE_VALIDATIONS: &[TurboJSONValidation] = &[
     validate_no_package_task_syntax,
     validate_extends,
     validate_package_command_positions,
+    validate_no_boundaries_baseline_in_package,
 ];
 
 /// Validator for TurboJson structures with context-aware validation
@@ -200,6 +201,26 @@ pub fn validate_with_has_no_topo(_validator: &Validator, turbo_json: &TurboJson)
         .collect()
 }
 
+/// Validates that `boundaries.baseline` is only set in the root turbo.json
+///
+/// There is a single baseline per repository, so its location is only
+/// configurable from the root.
+pub fn validate_no_boundaries_baseline_in_package(
+    _validator: &Validator,
+    turbo_json: &TurboJson,
+) -> Vec<Error> {
+    turbo_json
+        .boundaries
+        .as_ref()
+        .and_then(|boundaries| boundaries.baseline.as_ref())
+        .map(|baseline| {
+            let (span, text) = baseline.span_and_text("turbo.json");
+            Error::BoundariesBaselineInPackage { span, text }
+        })
+        .into_iter()
+        .collect()
+}
+
 /// Validates that task-level `extends` is not used in root turbo.json
 ///
 /// The task-level `extends` field (which controls whether a task inherits
@@ -319,6 +340,41 @@ mod tests {
     #[test]
     fn test_topological_delimiter_constant() {
         assert_eq!(TOPOLOGICAL_PIPELINE_DELIMITER, "^");
+    }
+
+    #[test]
+    fn test_boundaries_baseline_is_root_only() {
+        let raw = crate::RawRootTurboJson::parse(
+            r#"{"boundaries":{"baseline":"config/boundaries-baseline.json"}}"#,
+            "turbo.json",
+        )
+        .unwrap();
+        let turbo_json = TurboJson::try_from(RawTurboJson::try_from(raw).unwrap()).unwrap();
+        assert_eq!(
+            turbo_json
+                .boundaries
+                .as_ref()
+                .and_then(|boundaries| boundaries.baseline.as_ref())
+                .map(|baseline| baseline.as_inner().as_str()),
+            Some("config/boundaries-baseline.json")
+        );
+        let errors = Validator::new().validate_turbo_json(&PackageName::Root, &turbo_json);
+        assert!(errors.is_empty(), "got: {errors:?}");
+
+        let raw = RawPackageTurboJson::parse(
+            r#"{"extends":["//"],"boundaries":{"baseline":"baseline.json"}}"#,
+            "apps/web/turbo.json",
+        )
+        .unwrap();
+        let turbo_json = TurboJson::try_from(RawTurboJson::from(raw)).unwrap();
+        let errors = Validator::new().validate_turbo_json(&PackageName::from("web"), &turbo_json);
+        assert!(
+            matches!(
+                errors.as_slice(),
+                [Error::BoundariesBaselineInPackage { .. }]
+            ),
+            "got: {errors:?}"
+        );
     }
 
     #[test]

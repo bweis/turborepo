@@ -32,4 +32,14 @@ dependencies?: Permissions,
  *
  * Restricts which packages can import this package.
  */
-dependents?: Permissions, };
+dependents?: Permissions, 
+/**
+ * Path to the boundaries baseline file, relative to the repository root.
+ *
+ * The baseline records existing violations so that `turbo boundaries`
+ * only fails on new ones. Generate or update it with `turbo boundaries
+ * --update-baseline`. Only valid in the root `turbo.json`.
+ *
+ * Defaults to `boundaries-baseline.json`.
+ */
+baseline?: string, };

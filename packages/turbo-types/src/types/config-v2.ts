@@ -827,6 +827,15 @@ export interface RootBoundariesConfig extends BoundariesConfig {
    * can import a tag and which packages a tag can import
    */
   tags?: BoundariesRulesMap;
+  /**
+   * Path to the boundaries baseline file, relative to the repository root.
+   * The baseline records existing violations so that `turbo boundaries`
+   * only fails on new ones. Generate or update it with
+   * `turbo boundaries --update-baseline`.
+   *
+   * @defaultValue `"boundaries-baseline.json"`
+   */
+  baseline?: string;
 }
 
 export const isRootSchemaV2 = (schema: Schema): schema is RootSchema =>
