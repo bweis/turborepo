@@ -201,8 +201,13 @@ every Workspace package it depends on, directly or transitively. If `@repo/web` 
 
 A few things to keep in mind:
 
-- All dependency fields are checked: `dependencies`, `devDependencies`, `optionalDependencies`, and
-  `peerDependencies`.
+- For the package the rule applies to, all dependency fields are checked: `dependencies`, `devDependencies`,
+  `optionalDependencies`, and `peerDependencies`.
+- For the Workspace packages it depends on, `devDependencies` are skipped, since they're never installed for or bundled
+  into their dependents. Their `dependencies`, `optionalDependencies`, and `peerDependencies` are checked.
+- The Workspace packages that are checked are found the same way as for tag rules, including packages that are only
+  reached through a `devDependencies` entry. For example, if `@repo/web` lists `@repo/test-utils` in its
+  `devDependencies`, the npm packages `@repo/test-utils` declares in `dependencies` are still checked.
 - npm aliases are matched by both the declared name and the aliased package, so `"db": "npm:pg@^8"` is denied by
   `"pg"`.
 - In globs, `*` doesn't match `/`, so `@aws-sdk/*` matches `@aws-sdk/client-s3`, and `drizzle-*` matches

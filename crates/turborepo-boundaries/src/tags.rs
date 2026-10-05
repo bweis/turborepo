@@ -118,6 +118,8 @@ struct DeniedDeclaration {
     /// The real package, for npm aliases.
     aliased_package: Option<String>,
     dependency_kind: &'static str,
+    /// Whether the dependency is declared in `devDependencies`.
+    is_dev_dependency: bool,
     /// Index into `DeniedPackages::patterns`.
     pattern: usize,
 }
@@ -218,6 +220,7 @@ impl DeniedPackages {
                     dependency: dependency.to_string(),
                     aliased_package: aliased_package.map(str::to_string),
                     dependency_kind: dependency_kind_field(declaration.kind()),
+                    is_dev_dependency: declaration.kind() == DependencyKind::Development,
                     pattern,
                 })
             })
@@ -276,6 +279,10 @@ fn dependency_kind_field(kind: DependencyKind) -> &'static str {
 /// Checks the external dependencies declared by `pkg` and by each of its
 /// transitive workspace dependencies against `denyPackages`.
 ///
+/// All of `pkg`'s own dependency fields are checked. For workspace
+/// dependencies, `devDependencies` are skipped: they are never installed for
+/// or bundled into consumers of that package.
+///
 /// `dependencies` must be sorted by name so output is deterministic.
 /// `reported` holds the `(declaring package, dependency)` pairs already
 /// reported for `pkg`, so a dependency denied by several rules is reported
@@ -308,6 +315,9 @@ fn check_denied_packages<G, T>(
             .denied_declarations(ctx.pkg_dep_graph, declared_by)
             .iter()
         {
+            if denied.is_dev_dependency && declared_by != source_package_name {
+                continue;
+            }
             if !reported.insert((declared_by.clone(), denied.dependency.clone())) {
                 continue;
             }
@@ -2020,14 +2030,56 @@ mod tests {
     }
 
     #[test]
-    fn deny_packages_reports_dev_dependencies_of_workspace_dependencies() {
-        // Documents current behavior, which is an open design question: a
-        // devDependency of a workspace dependency is reported even though it
-        // is never installed for consumers of that dependency.
+    fn deny_packages_skips_dev_dependencies_of_workspace_dependencies() {
+        // A workspace dependency's devDependencies are never installed for or
+        // bundled into its consumers, so they aren't checked. Its other
+        // dependency fields still are.
         let mut graph = MockGraph::new();
         graph.add_package("web");
         graph.add_package("db");
         graph.add_dep("web", "db");
+        graph.add_external(
+            "db",
+            "drizzle-kit",
+            "drizzle-kit",
+            DependencyKind::Development,
+        );
+        graph.add_external(
+            "db",
+            "drizzle-orm",
+            "drizzle-orm",
+            DependencyKind::Peer { optional: false },
+        );
+        let (rules, _) = deny_packages_rule(&["drizzle-*"]);
+
+        let diagnostics = check_browser_package(&graph, &rules, "web");
+
+        assert_eq!(
+            denied_packages(&diagnostics),
+            vec![(
+                "db".to_string(),
+                "drizzle-orm".to_string(),
+                "peerDependencies",
+                "drizzle-*".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn deny_packages_reports_own_dev_dependencies() {
+        // The governed package's own devDependencies are still checked, even
+        // when a workspace dependency declares the same package as a
+        // devDependency.
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_external(
+            "web",
+            "drizzle-kit",
+            "drizzle-kit",
+            DependencyKind::Development,
+        );
         graph.add_external(
             "db",
             "drizzle-kit",
@@ -2041,7 +2093,7 @@ mod tests {
         assert_eq!(
             denied_packages(&diagnostics),
             vec![(
-                "db".to_string(),
+                "web".to_string(),
                 "drizzle-kit".to_string(),
                 "devDependencies",
                 "drizzle-*".to_string()

@@ -1,0 +1,6 @@
+{
+  "name": "@repo/web",
+  "dependencies": {
+    "@repo/ui": "*"
+  }
+}

@@ -20,6 +20,7 @@ deny?: Array<string>,
  *
  * Checked against the external dependencies declared in the
  * `package.json` of the package and of each of its transitive workspace
- * dependencies. Only valid in `dependencies` rules.
+ * dependencies (excluding their `devDependencies`). Only valid in
+ * `dependencies` rules.
  */
 denyPackages?: Array<string>, };
