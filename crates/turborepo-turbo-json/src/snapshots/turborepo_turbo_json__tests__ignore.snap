@@ -1,0 +1,10 @@
+---
+source: crates/turborepo-turbo-json/src/lib.rs
+expression: raw_boundaries_config
+---
+{
+  "ignore": [
+    "**/routeTree.gen.ts",
+    "src/generated/**"
+  ]
+}

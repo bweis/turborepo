@@ -926,6 +926,12 @@ mod tests {
         }"#,
         "import checks disabled"
     )]
+    #[test_case(
+        r#"{
+            "ignore": ["**/routeTree.gen.ts", "src/generated/**"]
+        }"#,
+        "ignore"
+    )]
     fn test_deserialize_boundaries(json: &str, name: &str) {
         // Match the options used by parse_turbo_json: production turbo.json
         // parsing allows comments and trailing commas.

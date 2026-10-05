@@ -45,6 +45,15 @@ pub struct BoundariesConfig {
     #[ts(optional)]
     pub dependents: Option<Spanned<Permissions>>,
 
+    /// Globs for files that should be skipped by the import checks.
+    ///
+    /// Globs are relative to the package directory. In the root `turbo.json`
+    /// they apply to every package, and in a package's `turbo.json` they apply
+    /// to that package in addition to the root globs. Useful for generated
+    /// files that cannot carry `@boundaries-ignore` comments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ignore: Option<Spanned<Vec<Spanned<String>>>>,
     /// Whether to check each package's source file imports.
     ///
     /// When `false`, imports are not checked for leaving the package, for
@@ -125,6 +134,12 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        self.ignore.add_text(text.clone());
+        if let Some(ignore) = &mut self.ignore {
+            for glob in ignore.as_inner_mut() {
+                glob.add_text(text.clone());
+            }
+        }
         self.import_checks.add_text(text);
     }
 
@@ -140,6 +155,12 @@ impl WithMetadata for BoundariesConfig {
         if let Some(implicit_dependencies) = &mut self.implicit_dependencies {
             for dep in implicit_dependencies.as_inner_mut() {
                 dep.add_path(path.clone());
+            }
+        }
+        self.ignore.add_path(path.clone());
+        if let Some(ignore) = &mut self.ignore {
+            for glob in ignore.as_inner_mut() {
+                glob.add_path(path.clone());
             }
         }
         self.import_checks.add_path(path);

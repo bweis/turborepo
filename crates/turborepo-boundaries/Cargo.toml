@@ -36,6 +36,7 @@ turborepo-rayon-compat = { workspace = true }
 turborepo-repository = { path = "../turborepo-repository" }
 turborepo-ui = { workspace = true }
 unrs_resolver = { workspace = true }
+wax = { workspace = true }
 
 [dev-dependencies]
 dunce = { workspace = true }

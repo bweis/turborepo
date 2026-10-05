@@ -37,6 +37,32 @@ Imports that match a `paths` entry in the package's `tsconfig.json` are resolved
 For example, with `"@ui/*": ["../../packages/ui/src/*"]` in `apps/web/tsconfig.json`, `import { Button } from "@ui/button"` is an import of the package in `packages/ui` (for example, `@repo/ui`), so `apps/web` needs `@repo/ui` in its `package.json` dependencies.
 
 Specifiers that walk up the directory tree with `..` (like `@/../../packages/ui/src/button`) are always reported as leaving the package, even when they start with an alias.
+## Ignoring files
+
+To skip an individual import, add a `// @boundaries-ignore <reason>` comment on the line above it.
+
+Some files, like generated code (for example, TanStack Router's `routeTree.gen.ts`), can't keep comments because they're rewritten on every build. Use `boundaries.ignore` to skip them entirely:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "ignore": ["**/routeTree.gen.ts"]
+  }
+}
+```
+
+Globs are matched relative to each package's directory. Globs in the root `turbo.json` apply to every package, and globs in a package's `turbo.json` apply to that package in addition to the root globs:
+
+```json title="./apps/web/turbo.json"
+{
+  "extends": ["//"],
+  "boundaries": {
+    "ignore": ["src/generated/**"]
+  }
+}
+```
+
+Ignored files aren't parsed, so none of their imports are checked, and they don't count towards the number of checked files. Negated globs (`!`) aren't supported.
 
 ## Tags
 

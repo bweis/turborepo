@@ -819,6 +819,12 @@ export interface BoundariesConfig {
    * These can include dependencies automatically injected by a framework or a testing library.
    */
   implicitDependencies?: Array<string>;
+  /**
+   * Globs for files that should be skipped by the import checks, relative to the package directory.
+   * Globs in the root turbo.json apply to every package, and globs in a package's turbo.json
+   * apply to that package in addition to the root globs.
+   */
+  ignore?: Array<string>;
 }
 
 export interface RootBoundariesConfig extends BoundariesConfig {

@@ -289,6 +289,20 @@ pub enum Error {
     FileNotFound(AbsoluteSystemPathBuf),
     #[error("failed to write to file: {0}")]
     FileWrite(AbsoluteSystemPathBuf),
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    InvalidIgnoreGlob(Box<InvalidIgnoreGlob>),
+}
+
+#[derive(Debug, Error, Diagnostic)]
+#[error("Invalid glob `{glob}` in `boundaries.ignore`: {reason}")]
+pub struct InvalidIgnoreGlob {
+    glob: String,
+    reason: String,
+    #[label("glob defined here")]
+    span: Option<SourceSpan>,
+    #[source_code]
+    text: NamedSource<Arc<str>>,
 }
 
 impl BoundariesDiagnostic {
@@ -599,6 +613,7 @@ impl BoundariesChecker {
         let global_implicit_dependencies = ctx
             .turbo_json_provider
             .implicit_dependencies(&PackageName::Root);
+        let global_ignore_globs = Self::ignore_globs(ctx.root_boundaries_config)?;
 
         // Every checkable package, regardless of the filter, can be the target of
         // an import, so the directory lookup covers the whole workspace.
@@ -646,6 +661,7 @@ impl BoundariesChecker {
                                     &global_implicit_dependencies,
                                     &workspace_packages,
                                     import_checks,
+                                    &global_ignore_globs,
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -679,6 +695,45 @@ impl BoundariesChecker {
             })
     }
 
+    /// Parses the `boundaries.ignore` globs of a config, pointing at the
+    /// offending entry in `turbo.json` if one is invalid.
+    fn ignore_globs(config: Option<&BoundariesConfig>) -> Result<Vec<ValidatedGlob>, Error> {
+        let Some(ignore) = config.and_then(|config| config.ignore.as_ref()) else {
+            return Ok(Vec::new());
+        };
+
+        ignore
+            .as_inner()
+            .iter()
+            .map(|glob| {
+                let invalid = |reason: String| {
+                    let (span, text) = glob.span_and_text("turbo.json");
+                    Error::InvalidIgnoreGlob(Box::new(InvalidIgnoreGlob {
+                        glob: glob.as_inner().clone(),
+                        reason,
+                        span,
+                        text: into_shared_source(text),
+                    }))
+                };
+
+                // Exclusions don't support negation, so a leading `!` would
+                // silently match nothing.
+                if glob.starts_with('!') {
+                    return Err(invalid("negated globs are not supported".to_string()));
+                }
+                let validated: ValidatedGlob = glob
+                    .parse()
+                    .map_err(|e: globwalk::GlobError| invalid(e.to_string()))?;
+                // Compile the glob up front so syntax errors are reported against
+                // the config entry instead of surfacing from the file walk.
+                wax::Glob::new(&globwalk::fix_glob_pattern(validated.as_str()))
+                    .map_err(|e| invalid(e.to_string()))?;
+                Ok(validated)
+            })
+            .collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn check_package<G, T>(
         ctx: &BoundariesContext<'_, G, T>,
         package_name: &PackageName,
@@ -688,6 +743,7 @@ impl BoundariesChecker {
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
         workspace_packages: &WorkspacePackageDirectories,
         import_checks: bool,
+        global_ignore_globs: &[ValidatedGlob],
     ) -> Result<BoundariesResult, Error>
     where
         G: PackageGraphProvider,
@@ -698,6 +754,10 @@ impl BoundariesChecker {
 
         if import_checks {
             let implicit_dependencies = ctx.turbo_json_provider.implicit_dependencies(package_name);
+            let mut ignore_globs = global_ignore_globs.to_vec();
+            ignore_globs.extend(Self::ignore_globs(
+                ctx.turbo_json_provider.boundaries_config(package_name),
+            )?);
             let file_result = Self::check_package_files(
                 ctx,
                 package_name,
@@ -705,6 +765,7 @@ impl BoundariesChecker {
                 &implicit_dependencies,
                 global_implicit_dependencies,
                 workspace_packages,
+                &ignore_globs,
             )?;
             result.merge(file_result);
         }
@@ -734,6 +795,7 @@ impl BoundariesChecker {
         implicit_dependencies: &HashMap<String, Spanned<()>>,
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
         workspace_packages: &WorkspacePackageDirectories,
+        ignore_globs: &[ValidatedGlob],
     ) -> Result<BoundariesResult, Error>
     where
         G: PackageGraphProvider,
@@ -758,8 +820,11 @@ impl BoundariesChecker {
                 "**/*.svelte".parse()?,
                 "**/*.vue".parse()?,
             ];
-            let exclude_patterns: [ValidatedGlob; 2] =
-                ["node_modules/**".parse()?, "**/node_modules/**".parse()?];
+            // Files matched by `boundaries.ignore` are excluded from the walk, so
+            // they are never parsed and don't count towards `files_checked`.
+            let mut exclude_patterns: Vec<ValidatedGlob> =
+                vec!["node_modules/**".parse()?, "**/node_modules/**".parse()?];
+            exclude_patterns.extend_from_slice(ignore_globs);
 
             globwalk::globwalk_with_settings(
                 &package_root,
@@ -915,6 +980,8 @@ impl BoundariesChecker {
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
 
     #[test]
@@ -1317,6 +1384,179 @@ mod tests {
 
         assert_eq!(result.files_checked, 1);
         assert!(result.diagnostics.is_empty());
+    }
+
+    struct MockTurboJsonWithBoundaries {
+        configs: HashMap<PackageName, BoundariesConfig>,
+    }
+
+    impl TurboJsonProvider for MockTurboJsonWithBoundaries {
+        fn has_turbo_json(&self, _: &PackageName) -> bool {
+            false
+        }
+
+        fn boundaries_config(&self, pkg: &PackageName) -> Option<&BoundariesConfig> {
+            self.configs.get(pkg)
+        }
+
+        fn package_tags(&self, _: &PackageName) -> Option<&Spanned<Vec<Spanned<String>>>> {
+            None
+        }
+
+        fn implicit_dependencies(&self, _: &PackageName) -> HashMap<String, Spanned<()>> {
+            HashMap::new()
+        }
+    }
+
+    fn ignore_config(globs: &[&str]) -> BoundariesConfig {
+        BoundariesConfig {
+            ignore: Some(Spanned::new(
+                globs
+                    .iter()
+                    .map(|glob| Spanned::new(glob.to_string()))
+                    .collect(),
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Creates a package with a clean `index.ts` and the given files, each
+    /// importing an undeclared dependency.
+    fn create_package_with_violations(repo_root: &AbsoluteSystemPath, name: &str, files: &[&str]) {
+        let package_directory = repo_root.join_components(&["packages", name]);
+        package_directory.create_dir_all().unwrap();
+        package_directory
+            .join_component("package.json")
+            .create_with_contents(format!(r#"{{"name":"{name}"}}"#))
+            .unwrap();
+        package_directory
+            .join_component("index.ts")
+            .create_with_contents("export {};\n")
+            .unwrap();
+        for file in files {
+            let path =
+                package_directory.join_unix_path(turbopath::RelativeUnixPath::new(file).unwrap());
+            path.ensure_dir().unwrap();
+            path.create_with_contents("import 'undeclared-dependency';\n")
+                .unwrap();
+        }
+    }
+
+    fn diagnostic_files(repo_root: &AbsoluteSystemPath, result: &BoundariesResult) -> Vec<String> {
+        let mut files: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| diagnostic.path_and_span())
+            .map(|(path, _)| repo_root.anchor(path).unwrap().to_unix().to_string())
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn check_boundaries_skips_files_matching_root_ignore_globs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let package_name = PackageName::Other("app".into());
+        create_package_with_violations(
+            repo_root,
+            "app",
+            &[
+                "src/routeTree.gen.ts",
+                "src/generated/client.ts",
+                "src/app.ts",
+            ],
+        );
+
+        let graph = MockGraph::new(vec![package_name.clone()]);
+        let filtered = HashSet::from([package_name]);
+        let root_config = ignore_config(&["**/routeTree.gen.ts", "src/generated/**"]);
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &MockTurboJson,
+                root_boundaries_config: Some(&root_config),
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            diagnostic_files(repo_root, &result),
+            ["packages/app/src/app.ts"]
+        );
+        // Ignored files are not walked, so only `index.ts` and `src/app.ts`
+        // are counted.
+        assert_eq!(result.files_checked, 2);
+    }
+
+    #[test]
+    fn check_boundaries_combines_root_and_package_ignore_globs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let app = PackageName::Other("app".into());
+        let lib = PackageName::Other("lib".into());
+        for name in ["app", "lib"] {
+            create_package_with_violations(repo_root, name, &["root.gen.ts", "package.gen.ts"]);
+        }
+
+        let graph = MockGraph::new(vec![app.clone(), lib.clone()]);
+        let filtered = HashSet::from([app.clone(), lib]);
+        let root_config = ignore_config(&["root.gen.ts"]);
+        let turbo_json = MockTurboJsonWithBoundaries {
+            configs: HashMap::from([(app, ignore_config(&["package.gen.ts"]))]),
+        };
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &turbo_json,
+                root_boundaries_config: Some(&root_config),
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        // `app` ignores both files, `lib` only ignores the root glob.
+        assert_eq!(
+            diagnostic_files(repo_root, &result),
+            ["packages/lib/package.gen.ts"]
+        );
+        assert_eq!(result.files_checked, 3);
+    }
+
+    #[test_case("src/[" ; "unclosed character class")]
+    #[test_case("!**/*.gen.ts" ; "negation")]
+    fn check_boundaries_rejects_invalid_ignore_globs(glob: &str) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let package_name = PackageName::Other("app".into());
+        create_package_with_violations(repo_root, "app", &[]);
+
+        let graph = MockGraph::new(vec![package_name.clone()]);
+        let filtered = HashSet::from([package_name.clone()]);
+        let turbo_json = MockTurboJsonWithBoundaries {
+            configs: HashMap::from([(package_name, ignore_config(&[glob]))]),
+        };
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &turbo_json,
+                root_boundaries_config: None,
+                filtered_pkgs: &filtered,
+            },
+            false,
+        );
+
+        match result {
+            Err(Error::InvalidIgnoreGlob(invalid)) => assert_eq!(invalid.glob, glob),
+            Err(error) => panic!("expected InvalidIgnoreGlob, got {error}"),
+            Ok(_) => panic!("expected InvalidIgnoreGlob, got Ok"),
+        }
     }
 
     #[test]

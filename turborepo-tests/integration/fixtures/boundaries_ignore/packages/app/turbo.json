@@ -1,0 +1,6 @@
+{
+  "extends": ["//"],
+  "boundaries": {
+    "ignore": ["src/generated/**"]
+  }
+}
