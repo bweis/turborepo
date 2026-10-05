@@ -257,22 +257,12 @@ fn test_boundaries_adoption_scenario() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-// BUG: `importChecks: false` makes baselined import violations look fixed.
-//
-// Repro (fixture `boundaries_adoption`):
-//   turbo boundaries --update-baseline      # 6 violations, 2 of them imports
-//   # set "importChecks": false in the root turbo.json
-//   turbo boundaries                        # exit 1: "Stale entry ... `zod`"
-//   turbo boundaries --update-baseline      # drops both import entries
-//   # set "importChecks" back to true
-//   turbo boundaries                        # exit 1: zod/@repo/utils are "new"
-//
 // Import rules aren't evaluated when import checks are disabled, so their
-// entries should be treated like entries for packages excluded by `--filter`:
-// neither matched nor stale, and preserved by `--update-baseline`.
+// baseline entries are treated like entries for packages excluded by
+// `--filter`: neither matched nor stale, and preserved by `--update-baseline`.
+// Previously they were reported as stale and dropped by `--update-baseline`,
+// so re-enabling import checks reported them as new violations.
 #[test]
-#[ignore = "importChecks: false reports baselined import violations as stale and drops them on \
-            --update-baseline"]
 fn test_boundaries_adoption_import_checks_disabled_keeps_import_baseline()
 -> Result<(), anyhow::Error> {
     let tempdir = tempfile::tempdir()?;
