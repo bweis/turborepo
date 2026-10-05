@@ -104,6 +104,13 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        for permissions in [&mut self.dependencies, &mut self.dependents]
+            .into_iter()
+            .flatten()
+        {
+            permissions.add_text(text.clone());
+            permissions.value.add_text(text.clone());
+        }
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -119,6 +126,13 @@ impl WithMetadata for BoundariesConfig {
             for dep in implicit_dependencies.as_inner_mut() {
                 dep.add_path(path.clone());
             }
+        }
+        for permissions in [&mut self.dependencies, &mut self.dependents]
+            .into_iter()
+            .flatten()
+        {
+            permissions.add_path(path.clone());
+            permissions.value.add_path(path.clone());
         }
     }
 }
