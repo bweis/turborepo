@@ -315,12 +315,6 @@ pub(crate) fn check_file_import(
     }
 }
 
-/// Returns true if the import specifier refers to a Bun runtime builtin module.
-///
-/// Bun provides its own built-in modules (`bun`, `bun:test`, `bun:sqlite`,
-/// etc.) that are available at runtime but are not Node.js builtins. Without
-/// this check, a project with `@types/bun` in devDependencies would incorrectly
-/// flag `import { $ } from "bun"` as a type-only import.
 /// Returns the 1-based line number of the byte `offset` in `source`.
 fn line_number(source: &str, offset: usize) -> usize {
     source.as_bytes()[..offset]
@@ -330,6 +324,12 @@ fn line_number(source: &str, offset: usize) -> usize {
         + 1
 }
 
+/// Returns true if the import specifier refers to a Bun runtime builtin module.
+///
+/// Bun provides its own built-in modules (`bun`, `bun:test`, `bun:sqlite`,
+/// etc.) that are available at runtime but are not Node.js builtins. Without
+/// this check, a project with `@types/bun` in devDependencies would incorrectly
+/// flag `import { $ } from "bun"` as a type-only import.
 fn is_bun_builtin(import: &str) -> bool {
     import == "bun" || import.starts_with("bun:")
 }
