@@ -311,7 +311,6 @@ fn test_boundaries_adoption_import_checks_disabled_keeps_import_baseline()
 // current behavior, and the docs say every dependency field of every workspace
 // dependency is checked.
 #[test]
-#[ignore = "denyPackages reports devDependencies of transitive workspace dependencies"]
 fn test_boundaries_adoption_deny_packages_skips_transitive_dev_dependencies()
 -> Result<(), anyhow::Error> {
     let tempdir = tempfile::tempdir()?;
@@ -362,7 +361,6 @@ fn test_boundaries_adoption_deny_packages_skips_transitive_dev_dependencies()
 // `test_boundaries_cli_shows_warnings` asserts the same off-by-one (`line 10`
 // for an import on line 11).
 #[test]
-#[ignore = "@boundaries-ignore warnings report 0-based line numbers"]
 fn test_boundaries_adoption_ignore_warning_line_number() -> Result<(), anyhow::Error> {
     let tempdir = tempfile::tempdir()?;
     let dir = tempdir.path();
