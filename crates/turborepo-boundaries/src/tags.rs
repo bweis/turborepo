@@ -1079,6 +1079,62 @@ mod tests {
         assert_eq!(text.name(), "packages/pkg-a/package.json");
     }
 
+    #[test]
+    fn package_level_deny_diagnostic_has_turbo_json_source() {
+        use biome_json_parser::JsonParserOptions;
+        use turborepo_errors::{WithMetadata, json::deserialize_from_json_str};
+
+        let turbo_json = r#"{ "dependencies": { "deny": ["pkg-b"] } }"#;
+        let (config, errors) = deserialize_from_json_str::<BoundariesConfig>(
+            turbo_json,
+            JsonParserOptions::default(),
+            "turbo.json",
+        );
+        assert!(errors.is_empty());
+        let mut config = config.unwrap();
+        config.add_text(Arc::from(turbo_json));
+        config.add_path(Arc::from("packages/pkg-a/turbo.json"));
+
+        let mut graph = MockGraph::new();
+        graph.add_package("pkg-a");
+        graph.add_package("pkg-b");
+        graph.add_dep("pkg-a", "pkg-b");
+        let mut turbo_json_provider = MockTurboJson::new();
+        turbo_json_provider.set_boundaries("pkg-a", config);
+        let repo_root = make_repo_root();
+        let filtered = HashSet::new();
+        let ctx = BoundariesContext {
+            repo_root: &repo_root,
+            pkg_dep_graph: &graph,
+            turbo_json_provider: &turbo_json_provider,
+            root_boundaries_config: None,
+            filtered_pkgs: &filtered,
+        };
+
+        let diagnostics = check_package_tags(
+            &ctx,
+            &PackageTagIndex::default(),
+            PackageNode::Workspace(PackageName::Other("pkg-a".into())),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let [BoundariesDiagnostic::DeniedTag { secondary, .. }] = diagnostics.as_slice() else {
+            panic!("expected one denied-tag diagnostic, got: {diagnostics:?}");
+        };
+        let SecondaryDiagnostic::Denylist { span, text } = &secondary[0] else {
+            panic!("expected denylist secondary diagnostic");
+        };
+        let span = span.expect("denylist should have a span");
+        assert_eq!(text.name(), "packages/pkg-a/turbo.json");
+        assert_eq!(
+            &turbo_json[span.offset()..span.offset() + span.len()],
+            r#"["pkg-b"]"#
+        );
+    }
+
     // -- needs_dependencies / needs_ancestors tests --
 
     #[test]

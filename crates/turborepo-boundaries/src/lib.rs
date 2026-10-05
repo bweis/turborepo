@@ -940,6 +940,7 @@ impl BoundariesChecker {
             .collect()
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn check_package<G, T>(
         ctx: &BoundariesContext<'_, G, T>,
         package_name: &PackageName,
