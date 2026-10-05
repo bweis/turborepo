@@ -74,6 +74,8 @@ pub struct Rule {
 
 /// Permission rules for boundaries.
 #[derive(Serialize, Default, Debug, Clone, Deserializable, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[schemars(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Permissions {
     /// Lists which tags are allowed.
@@ -87,6 +89,16 @@ pub struct Permissions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deny: Option<Spanned<Vec<Spanned<String>>>>,
+
+    /// Lists external (npm) packages that are banned, by name or glob (e.g.
+    /// `"pg"`, `"@aws-sdk/*"`, `"drizzle-*"`).
+    ///
+    /// Checked against the external dependencies declared in the
+    /// `package.json` of the package and of each of its transitive workspace
+    /// dependencies. Only valid in `dependencies` rules.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deny_packages: Option<Spanned<Vec<Spanned<String>>>>,
 }
 
 impl WithMetadata for BoundariesConfig {
@@ -104,6 +116,13 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        for permissions in [&mut self.dependencies, &mut self.dependents]
+            .into_iter()
+            .flatten()
+        {
+            permissions.add_text(text.clone());
+            permissions.value.add_text(text.clone());
+        }
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -119,6 +138,13 @@ impl WithMetadata for BoundariesConfig {
             for dep in implicit_dependencies.as_inner_mut() {
                 dep.add_path(path.clone());
             }
+        }
+        for permissions in [&mut self.dependencies, &mut self.dependents]
+            .into_iter()
+            .flatten()
+        {
+            permissions.add_path(path.clone());
+            permissions.value.add_path(path.clone());
         }
     }
 }
@@ -160,6 +186,11 @@ impl WithMetadata for Permissions {
         if let Some(deny) = &mut self.deny {
             deny.value.add_text(text.clone());
         }
+
+        self.deny_packages.add_text(text.clone());
+        if let Some(deny_packages) = &mut self.deny_packages {
+            deny_packages.value.add_text(text);
+        }
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -170,7 +201,12 @@ impl WithMetadata for Permissions {
 
         self.deny.add_path(path.clone());
         if let Some(deny) = &mut self.deny {
-            deny.value.add_path(path);
+            deny.value.add_path(path.clone());
+        }
+
+        self.deny_packages.add_path(path.clone());
+        if let Some(deny_packages) = &mut self.deny_packages {
+            deny_packages.value.add_path(path);
         }
     }
 }

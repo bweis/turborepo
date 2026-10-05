@@ -913,6 +913,27 @@ mod tests {
       }"#,
         "package rule"
     )]
+    #[test_case(
+        r#"{
+            "tags": {
+                "browser": {
+                    "dependencies": {
+                        "deny": ["server"],
+                        "denyPackages": ["pg", "@aws-sdk/*"]
+                    }
+                }
+            }
+        }"#,
+        "tag rule with deny packages"
+    )]
+    #[test_case(
+        r#"{
+          "dependencies": {
+              "denyPackages": ["drizzle-*"]
+          }
+      }"#,
+        "package rule with deny packages"
+    )]
     fn test_deserialize_boundaries(json: &str, name: &str) {
         // Match the options used by parse_turbo_json: production turbo.json
         // parsing allows comments and trailing commas.

@@ -1,0 +1,37 @@
+---
+source: crates/turborepo/tests/boundaries.rs
+expression: query_output
+---
+{
+  "data": {
+    "boundaries": {
+      "items": [
+        {
+          "message": "Package `@repo/edge` depends on denied package `lodash` (declared in `dependencies` of `@repo/edge`)",
+          "import": "lodash",
+          "reason": "lodash"
+        },
+        {
+          "message": "Package `@repo/web` depends on denied package `drizzle-kit` (declared in `devDependencies` of `@repo/web`)",
+          "import": "drizzle-kit",
+          "reason": "drizzle-*"
+        },
+        {
+          "message": "Package `@repo/web` depends on denied package `pg` (declared in `dependencies` of `@repo/db`)",
+          "import": "pg",
+          "reason": "pg"
+        },
+        {
+          "message": "Package `@repo/web` depends on denied package `s3` (declared in `dependencies` of `@repo/utils`)",
+          "import": "s3",
+          "reason": "@aws-sdk/*"
+        },
+        {
+          "message": "`denyPackages` can only be used in `dependencies` rules",
+          "import": null,
+          "reason": null
+        }
+      ]
+    }
+  }
+}

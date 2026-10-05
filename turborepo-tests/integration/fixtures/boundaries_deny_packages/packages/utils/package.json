@@ -1,0 +1,7 @@
+{
+  "name": "@repo/utils",
+  "dependencies": {
+    "s3": "npm:@aws-sdk/client-s3@^3.0.0",
+    "@aws-sdk-lite/core": "^1.0.0"
+  }
+}

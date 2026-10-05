@@ -1,0 +1,19 @@
+---
+source: crates/turborepo-turbo-json/src/lib.rs
+expression: raw_boundaries_config
+---
+{
+  "tags": {
+    "browser": {
+      "dependencies": {
+        "deny": [
+          "server"
+        ],
+        "denyPackages": [
+          "pg",
+          "@aws-sdk/*"
+        ]
+      }
+    }
+  }
+}

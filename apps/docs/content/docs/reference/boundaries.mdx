@@ -104,3 +104,50 @@ Package names can also be used in place of a tag in allow and deny lists.
 Tags allow you to ensure that the wrong package isn't getting imported somewhere in your graph. These rules are
 applied even for dependencies of dependencies, so if you import a package that in turn imports another package
 with a denied tag, you will still get a rule violation.
+
+### Denying npm packages
+
+Use `denyPackages` in a `dependencies` rule to ban external (npm) packages. Entries can be package names or globs.
+For example, to make sure packages tagged `browser` never depend on server-only packages:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "tags": {
+      "browser": {
+        "dependencies": {
+          "denyPackages": ["pg", "drizzle-*", "@aws-sdk/*"]
+        }
+      }
+    }
+  }
+}
+```
+
+`denyPackages` is checked against the external dependencies declared in the `package.json` of the package and of
+every Workspace package it depends on, directly or transitively. If `@repo/web` is tagged `browser` and depends on
+`@repo/ui`, which depends on `@repo/db`, which declares `pg`, `turbo boundaries` reports that `@repo/web` depends on
+`pg` through `@repo/db`.
+
+A few things to keep in mind:
+
+- All dependency fields are checked: `dependencies`, `devDependencies`, `optionalDependencies`, and
+  `peerDependencies`.
+- npm aliases are matched by both the declared name and the aliased package, so `"db": "npm:pg@^8"` is denied by
+  `"pg"`.
+- In globs, `*` doesn't match `/`, so `@aws-sdk/*` matches `@aws-sdk/client-s3`, and `drizzle-*` matches
+  `drizzle-orm` but not `@scope/drizzle-orm`.
+- `denyPackages` only applies to external packages. To deny Workspace packages, use their names in `deny`.
+- `denyPackages` can only be used in `dependencies` rules, not in `dependents` rules.
+
+You can also use `denyPackages` in a package's own `turbo.json`:
+
+```json title="./apps/web/turbo.json"
+{
+  "boundaries": {
+    "dependencies": {
+      "denyPackages": ["pg"]
+    }
+  }
+}
+```

@@ -798,6 +798,13 @@ export interface Permissions {
    * Lists which tags are banned.
    */
   deny?: Array<string>;
+  /**
+   * Lists external (npm) packages that are banned, by name or glob
+   * (e.g. "pg", "@aws-sdk/*", "drizzle-*"). Checked against the external
+   * dependencies declared in the package.json of the package and of each of
+   * its transitive workspace dependencies. Only valid in `dependencies` rules.
+   */
+  denyPackages?: Array<string>;
 }
 
 interface TagRules {
