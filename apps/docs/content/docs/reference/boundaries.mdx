@@ -62,7 +62,7 @@ Globs are matched relative to each package's directory. Globs in the root `turbo
 }
 ```
 
-Ignored files aren't parsed, so none of their imports are checked, and they don't count towards the number of checked files. Negated globs (`!`) aren't supported.
+Ignored files aren't parsed, so none of their imports are checked, and they don't count towards the number of checked files. Negated globs (`!`) and globs that point outside the package (starting with `..`) aren't supported.
 
 ## Tags
 

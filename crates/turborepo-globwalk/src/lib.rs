@@ -295,6 +295,13 @@ pub struct GlobError {
     reason: String,
 }
 
+impl GlobError {
+    /// Why the input was rejected, without the input itself.
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
 #[derive(Debug, Default, Copy, Clone)]
 pub struct Settings {
     /// Don't recurse into a directory if it contains a `package.json` file.
