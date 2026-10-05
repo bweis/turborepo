@@ -1285,7 +1285,7 @@ Rules can also be added for a tag's dependents, i.e. packages that import this t
 
 A list of npm package names or globs that a tag's dependencies can't include. Only valid in `dependencies` rules.
 
-`denyPackages` is checked against the external dependencies declared in the `package.json` of the package and of every Workspace package it depends on, directly or transitively. Visit [the `boundaries` reference](/docs/reference/boundaries#denying-npm-packages) for details.
+`denyPackages` is checked against the external dependencies declared in the `package.json` of the package and of every Workspace package it depends on, directly or transitively. `devDependencies` are only checked for the package itself, not for the Workspace packages it depends on. Visit [the `boundaries` reference](/docs/reference/boundaries#denying-npm-packages) for details.
 
 ```jsonc title="./turbo.json"
 {

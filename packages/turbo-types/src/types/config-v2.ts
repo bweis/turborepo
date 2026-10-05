@@ -802,7 +802,8 @@ export interface Permissions {
    * Lists external (npm) packages that are banned, by name or glob
    * (e.g. "pg", "@aws-sdk/*", "drizzle-*"). Checked against the external
    * dependencies declared in the package.json of the package and of each of
-   * its transitive workspace dependencies. Only valid in `dependencies` rules.
+   * its transitive workspace dependencies (excluding their devDependencies).
+   * Only valid in `dependencies` rules.
    */
   denyPackages?: Array<string>;
 }

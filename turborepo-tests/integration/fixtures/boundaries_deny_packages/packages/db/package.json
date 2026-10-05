@@ -3,5 +3,9 @@
   "dependencies": {
     "pg": "^8.0.0",
     "@types/pg": "^8.0.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-sts": "^3.0.0",
+    "drizzle-kit": "^0.30.0"
   }
 }

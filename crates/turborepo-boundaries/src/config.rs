@@ -95,7 +95,8 @@ pub struct Permissions {
     ///
     /// Checked against the external dependencies declared in the
     /// `package.json` of the package and of each of its transitive workspace
-    /// dependencies. Only valid in `dependencies` rules.
+    /// dependencies (excluding their `devDependencies`). Only valid in
+    /// `dependencies` rules.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deny_packages: Option<Spanned<Vec<Spanned<String>>>>,

@@ -1,0 +1,13 @@
+{
+  "boundaries": {
+    "tags": {
+      "browser": {
+        "dependencies": {
+          "denyPackages": [
+            "pg"
+          ]
+        }
+      }
+    }
+  }
+}
