@@ -96,7 +96,8 @@ impl PackageTagIndex {
             let mut seen = HashSet::new();
             let mut tags = Vec::new();
             // Diagnostics about the tag list as a whole point at the package's
-            // own `tags`, or at the first matching glob if it has none.
+            // own `tags`, or, if it has none, at the matching glob that sorts
+            // first (`packageTags` is deserialized into a sorted map).
             let mut list_span = own_tags.map(|own_tags| own_tags.to(()));
             for tag in own_tags
                 .into_iter()
