@@ -25,6 +25,18 @@ fn test_boundaries_tags() -> Result<(), anyhow::Error> {
 }
 
 #[test]
+fn test_boundaries_ignore() -> Result<(), anyhow::Error> {
+    check_json_output!(
+        "boundaries_ignore",
+        "npm@10.5.0",
+        "query",
+        "get boundaries lints" => ["query { boundaries { items { message import } } }"],
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_boundaries_on_basic_monorepo() -> Result<(), anyhow::Error> {
     check_json_output!(
         "basic_monorepo",

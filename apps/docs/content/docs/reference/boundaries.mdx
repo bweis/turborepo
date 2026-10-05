@@ -26,6 +26,33 @@ This command will notify for two types of violations:
 - Importing a file outside of the package's directory
 - Importing a package that is not specified as a dependency in the package's `package.json`
 
+## Ignoring files
+
+To skip an individual import, add a `// @boundaries-ignore <reason>` comment on the line above it.
+
+Some files, like generated code (for example, TanStack Router's `routeTree.gen.ts`), can't keep comments because they're rewritten on every build. Use `boundaries.ignore` to skip them entirely:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "ignore": ["**/routeTree.gen.ts"]
+  }
+}
+```
+
+Globs are matched relative to each package's directory. Globs in the root `turbo.json` apply to every package, and globs in a package's `turbo.json` apply to that package in addition to the root globs:
+
+```json title="./apps/web/turbo.json"
+{
+  "extends": ["//"],
+  "boundaries": {
+    "ignore": ["src/generated/**"]
+  }
+}
+```
+
+Ignored files aren't parsed, so none of their imports are checked, and they don't count towards the number of checked files. Negated globs (`!`) aren't supported.
+
 ## Tags
 
 Boundaries also has a feature that lets you add tags to packages. These tags can be used to create rules

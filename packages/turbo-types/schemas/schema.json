@@ -258,6 +258,17 @@
             }
           ]
         },
+        "ignore": {
+          "description": "Globs for files that should be skipped by the import checks.\n\nGlobs are relative to the package directory. In the root `turbo.json` they apply to every package, and in a package's `turbo.json` they apply to that package in addition to the root globs. Useful for generated files that cannot carry `@boundaries-ignore` comments.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Array_of_String"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "implicitDependencies": {
           "description": "Declares any implicit dependencies, i.e. any dependency not declared in a `package.json`.\n\nThese can include dependencies automatically injected by a framework or a testing library.",
           "anyOf": [

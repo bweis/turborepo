@@ -1,0 +1,20 @@
+---
+source: crates/turborepo/tests/boundaries.rs
+expression: query_output
+---
+{
+  "data": {
+    "boundaries": {
+      "items": [
+        {
+          "message": "cannot import package `app` because it is not a dependency",
+          "import": "app"
+        },
+        {
+          "message": "import `../../lib/src/index` leaves the package",
+          "import": "../../lib/src/index"
+        }
+      ]
+    }
+  }
+}

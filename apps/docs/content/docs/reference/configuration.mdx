@@ -1224,6 +1224,18 @@ The `boundaries` tag allows you to define rules for the [`boundaries` command](/
 }
 ```
 
+### `ignore`
+
+A list of globs for files that [`turbo boundaries`](/docs/reference/boundaries#ignoring-files) should skip, relative to each package's directory. Globs in the root `turbo.json` apply to every package, and globs in a [Package Configuration](/docs/reference/package-configurations) apply to that package in addition to the root globs.
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "ignore": ["**/routeTree.gen.ts"]
+  }
+}
+```
+
 ### `tags`
 
 Each key in the `tags` object is the name of a tag that can be checked with [`turbo boundaries`](/docs/reference/boundaries).

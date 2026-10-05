@@ -7757,6 +7757,7 @@ dependencies = [
  "turborepo-repository",
  "turborepo-ui",
  "unrs_resolver",
+ "wax",
 ]
 
 [[package]]

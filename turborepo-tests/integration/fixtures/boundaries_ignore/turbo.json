@@ -1,0 +1,6 @@
+{
+  "$schema": "https://turborepo.dev/schema.v2.json",
+  "boundaries": {
+    "ignore": ["**/routeTree.gen.ts"]
+  }
+}

@@ -21,6 +21,7 @@ pub enum Error {
     #[error("{0}")]
     Bin(#[from] bin::Error),
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Boundaries(#[from] turborepo_boundaries::Error),
     #[error(transparent)]
     Path(#[from] turbopath::PathError),
