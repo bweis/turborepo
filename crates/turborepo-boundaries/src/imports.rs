@@ -69,22 +69,26 @@ pub struct WorkspacePackageDirectories {
 }
 
 impl WorkspacePackageDirectories {
+    /// Directories are canonicalized (once, here) because the resolver
+    /// returns symlink-resolved paths. Directories that can't be
+    /// canonicalized are kept as given.
     pub(crate) fn new(
         packages: impl IntoIterator<Item = (AbsoluteSystemPathBuf, PackageName)>,
     ) -> Self {
         Self {
-            by_directory: packages.into_iter().collect(),
+            by_directory: packages
+                .into_iter()
+                .map(|(directory, name)| (directory.to_realpath().unwrap_or(directory), name))
+                .collect(),
         }
     }
 
-    /// Returns the workspace package whose directory contains `path`. When
-    /// packages are nested, the deepest (most specific) package wins.
+    /// Returns the workspace package whose directory contains `path`, which
+    /// is expected to be symlink-resolved. When packages are nested, the
+    /// deepest (most specific) package wins.
     ///
     /// Costs one hash lookup per ancestor of `path`.
     pub(crate) fn package_containing(&self, path: &AbsoluteSystemPath) -> Option<&PackageName> {
-        if self.by_directory.is_empty() {
-            return None;
-        }
         path.ancestors()
             .find_map(|directory| self.by_directory.get(directory))
     }
@@ -1357,6 +1361,33 @@ mod test {
 
         assert!(!resolved, "package-named alias should fall through");
         assert!(diag.is_none());
+    }
+
+    /// The resolver returns symlink-resolved paths, so a package whose
+    /// directory is a symlink must still be found by its real location.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_package_lookup_resolves_symlinked_package_directories() {
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let root = dunce::canonicalize(tmp.path()).expect("canonicalize temp workspace");
+        let root = AbsoluteSystemPathBuf::try_from(root).expect("absolute utf-8 root");
+        let real_ui = root.join_components(&["vendor", "ui"]);
+        real_ui
+            .join_component("src")
+            .create_dir_all()
+            .expect("create real ui dir");
+        let packages = root.join_component("packages");
+        packages.create_dir_all().expect("create packages dir");
+        let linked_ui = packages.join_component("ui");
+        std::os::unix::fs::symlink(real_ui.as_std_path(), linked_ui.as_std_path())
+            .expect("symlink ui package");
+
+        let lookup = WorkspacePackageDirectories::new([(linked_ui, PackageName::from("ui"))]);
+
+        assert_eq!(
+            lookup.package_containing(&real_ui.join_components(&["src", "button.ts"])),
+            Some(&PackageName::from("ui"))
+        );
     }
 
     #[test]
