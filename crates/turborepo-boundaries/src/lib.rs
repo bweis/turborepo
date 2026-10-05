@@ -30,6 +30,7 @@ use turborepo_log::Subsystem;
 use turborepo_repository::{
     external_resolution::PackageExternalDeclarations,
     package_graph::{PackageGraph, PackageGraphNodeKind, PackageName, PackageNode},
+    relationships::DependencyKind,
 };
 use turborepo_ui::{BOLD_GREEN, BOLD_RED, ColorConfig, color};
 use unrs_resolver::Resolver;
@@ -65,6 +66,18 @@ pub trait PackageGraphProvider: Send + Sync {
     ) -> PackageExternalDeclarations<'a> {
         PackageExternalDeclarations::new(&[], name.as_str())
     }
+    /// Every dependency kind `package` declares `declaration_name` under.
+    /// `external_declarations` keeps one entry per name, so a name declared in
+    /// both `devDependencies` and `peerDependencies` is only reported there
+    /// as a devDependency. An empty result means the kinds are unknown and
+    /// the declaration's own kind is used.
+    fn dependency_declaration_kinds(
+        &self,
+        _package: &PackageName,
+        _declaration_name: &str,
+    ) -> Vec<DependencyKind> {
+        Vec::new()
+    }
     fn immediate_dependencies(&self, node: &PackageNode) -> Option<HashSet<&PackageNode>>;
     fn dependencies(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_>;
     fn ancestors(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_>;
@@ -93,6 +106,14 @@ impl PackageGraphProvider for PackageGraph {
         name: &'a PackageName,
     ) -> PackageExternalDeclarations<'a> {
         PackageGraph::external_declarations(self, name)
+    }
+
+    fn dependency_declaration_kinds(
+        &self,
+        package: &PackageName,
+        declaration_name: &str,
+    ) -> Vec<DependencyKind> {
+        PackageGraph::dependency_declaration_kinds(self, package, declaration_name).collect()
     }
 
     fn immediate_dependencies(&self, node: &PackageNode) -> Option<HashSet<&PackageNode>> {

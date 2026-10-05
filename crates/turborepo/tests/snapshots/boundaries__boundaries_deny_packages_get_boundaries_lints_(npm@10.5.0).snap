@@ -17,6 +17,11 @@ expression: query_output
           "reason": "drizzle-*"
         },
         {
+          "message": "Package `@repo/web` depends on denied package `drizzle-orm` (declared in `peerDependencies` of `@repo/ui`)",
+          "import": "drizzle-orm",
+          "reason": "drizzle-*"
+        },
+        {
           "message": "Package `@repo/web` depends on denied package `pg` (declared in `dependencies` of `@repo/db`)",
           "import": "pg",
           "reason": "pg"

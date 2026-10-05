@@ -3494,6 +3494,61 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_dependency_declaration_kinds_include_every_field() {
+        let root =
+            AbsoluteSystemPathBuf::new(if cfg!(windows) { r"C:\repo" } else { "/repo" }).unwrap();
+
+        let graph = PackageGraphBuilder::new(
+            &root,
+            PackageJson {
+                name: Some(Spanned::new("root".into())),
+                ..Default::default()
+            },
+        )
+        .with_single_package_mode(false)
+        .with_package_discovery(MockDiscovery)
+        .with_package_jsons(Some({
+            let mut package_jsons = HashMap::new();
+            package_jsons.insert(
+                root.join_components(&["packages", "a", "package.json"]),
+                PackageJson::from_value(serde_json::json!({
+                    "name": "a",
+                    "version": "1.0.0",
+                    "devDependencies": { "react": "^19.0.0" },
+                    "peerDependencies": { "react": "*" }
+                }))
+                .unwrap(),
+            );
+            package_jsons
+        }))
+        .build()
+        .await
+        .unwrap();
+
+        let a = PackageName::from("a");
+        // `external_declarations` keeps a single entry per name.
+        assert_eq!(
+            graph
+                .external_declarations(&a)
+                .iter()
+                .filter(|declaration| declaration.declaration_name() == "react")
+                .map(|declaration| declaration.kind())
+                .collect::<Vec<_>>(),
+            vec![DependencyKind::Development]
+        );
+        assert_eq!(
+            graph
+                .dependency_declaration_kinds(&a, "react")
+                .collect::<Vec<_>>(),
+            vec![
+                DependencyKind::Development,
+                DependencyKind::Peer { optional: false }
+            ]
+        );
+        assert_eq!(graph.dependency_declaration_kinds(&a, "vue").count(), 0);
+    }
+
+    #[tokio::test]
     async fn test_external_peers_preserve_optional_metadata() {
         let root =
             AbsoluteSystemPathBuf::new(if cfg!(windows) { r"C:\repo" } else { "/repo" }).unwrap();

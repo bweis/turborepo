@@ -489,6 +489,23 @@ impl PackageGraph {
             .any(|relationship| relationship.declaration_name() == declaration_name)
     }
 
+    /// Every dependency kind a package declares `declaration_name` under, in
+    /// manifest field order. Unlike [`PackageGraph::external_declarations`],
+    /// which keeps one entry per declaration name, this includes every field
+    /// the name appears in (e.g. both `devDependencies` and
+    /// `peerDependencies`).
+    pub fn dependency_declaration_kinds<'a>(
+        &'a self,
+        package: &PackageName,
+        declaration_name: &'a str,
+    ) -> impl Iterator<Item = crate::relationships::DependencyKind> + 'a {
+        self.relationship_knowledge
+            .relationships_for_source(package.as_str())
+            .iter()
+            .filter(move |relationship| relationship.declaration_name() == declaration_name)
+            .map(|relationship| relationship.kind())
+    }
+
     /// Required peer declarations that remain external after relationship
     /// classification. Declaration keys are preserved for lockfile traversal,
     /// including npm aliases and peers shadowed in other dependency tables.
