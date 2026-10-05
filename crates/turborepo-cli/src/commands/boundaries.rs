@@ -46,9 +46,12 @@ pub async fn run(
     // Loading the baseline before checking means a malformed baseline is
     // reported without waiting for the whole check to finish.
     let baseline = Baseline::load(&baseline_path, &baseline_display_path)?;
-    let scope = BaselineScope::from_context(&ctx);
+    let mut scope = BaselineScope::from_context(&ctx);
 
     let mut result = BoundariesChecker::check_boundaries(&ctx, true)?;
+    // Files that failed to parse may be missing violations, so their entries
+    // are neither matched nor rewritten.
+    let unchecked_files = scope.exclude_unchecked_files(run.repo_root(), &result.diagnostics);
 
     if update_baseline {
         let current = Baseline::from_diagnostics(run.repo_root(), &result.diagnostics);
@@ -82,6 +85,18 @@ pub async fn run(
                 } else {
                     "violations"
                 }
+            );
+        }
+        if unchecked_files > 0 && baseline.is_some() {
+            // The parse errors above already fail the command; make it clear
+            // that the baseline wasn't pruned for those files either.
+            println!(
+                "Kept existing entries for {unchecked_files} {} that could not be checked",
+                if unchecked_files == 1 {
+                    "file"
+                } else {
+                    "files"
+                },
             );
         }
         return Ok(if result.is_ok() { 0 } else { 1 });

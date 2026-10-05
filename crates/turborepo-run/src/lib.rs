@@ -1559,7 +1559,7 @@ fn query_boundary_diagnostic(
             import: Some(package_name.to_string()),
             reason: Some(tag),
         },
-        turborepo_boundaries::BoundariesDiagnostic::InvalidPath { path } => {
+        turborepo_boundaries::BoundariesDiagnostic::InvalidPath { path, .. } => {
             turborepo_query_api::BoundaryDiagnostic {
                 message,
                 path: Some(path),

@@ -189,7 +189,11 @@ pub enum BoundariesDiagnostic {
         secondary: [SecondaryDiagnostic; 1],
     },
     #[error("Path `{path}` is not valid UTF-8. Turborepo only supports UTF-8 paths.")]
-    InvalidPath { path: String },
+    InvalidPath {
+        path: String,
+        /// The file containing the import that resolved to `path`
+        file: AbsoluteSystemPathBuf,
+    },
     #[error(
         "Package `{package_name}` found without any tag listed in allowlist for \
          `{source_package_name}`"
@@ -340,6 +344,17 @@ impl BoundariesDiagnostic {
             Self::ParseError(..) => "parse-error",
             Self::CircularDependency { .. } => "circular-dependency",
             Self::StaleBaselineEntry { .. } => "stale-baseline-entry",
+        }
+    }
+
+    /// Returns the file that this diagnostic prevented from being fully
+    /// checked, if any. Violations in such a file may be missing from the
+    /// results.
+    pub fn unchecked_file(&self) -> Option<&AbsoluteSystemPath> {
+        match self {
+            Self::ParseError(path, _) => Some(path),
+            Self::InvalidPath { file, .. } => Some(file),
+            _ => None,
         }
     }
 
@@ -1075,9 +1090,10 @@ mod tests {
             files_checked: 3,
             packages_checked: 1,
             warnings: vec!["warn-b1".into(), "warn-b2".into()],
-            diagnostics: vec![BoundariesDiagnostic::InvalidPath {
-                path: "/bad".into(),
-            }],
+            diagnostics: vec![BoundariesDiagnostic::ParseError(
+                AbsoluteSystemPathBuf::new(if cfg!(windows) { "C:\\bad" } else { "/bad" }).unwrap(),
+                "oops".into(),
+            )],
             suppressed_by_baseline: 2,
         };
 

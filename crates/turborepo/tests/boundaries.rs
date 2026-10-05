@@ -316,6 +316,49 @@ mod baseline {
     }
 
     #[test]
+    fn test_baseline_keeps_entries_for_unparseable_files() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries", "npm@10.5.0", dir, false)?;
+
+        assert_status(dir, &["--update-baseline"], 0);
+        let baseline = read_baseline(dir, BASELINE);
+
+        // A syntax error means none of the file's imports are checked.
+        edit(dir, APP_INDEX, |contents| {
+            format!("{contents}\nconst = ;\n")
+        });
+
+        // Its baselined violations aren't reported as stale; only the parse
+        // error fails the check.
+        let (stdout, stderr) = assert_status(dir, &[], 1);
+        assert!(stdout.contains("1 issue found"), "{stdout}");
+        let squashed = squash(&stderr);
+        assert!(
+            squashed.contains(&squash("failed to parse file")),
+            "{stderr}"
+        );
+        assert!(!squashed.contains(&squash("Stale entry")), "{stderr}");
+
+        // Updating the baseline still fails on the parse error, and leaves the
+        // file's entries untouched.
+        let (stdout, _) = assert_status(dir, &["--update-baseline"], 1);
+        assert!(
+            stdout.contains("Kept existing entries for 1 file that could not be checked"),
+            "{stdout}"
+        );
+        assert_eq!(read_baseline(dir, BASELINE), baseline);
+
+        // Once the syntax error is fixed, the violations are still baselined.
+        edit(dir, APP_INDEX, |contents| {
+            contents.replace("\nconst = ;\n", "")
+        });
+        assert_status(dir, &[], 0);
+
+        Ok(())
+    }
+
+    #[test]
     fn test_baseline_path_must_stay_in_repository() -> Result<(), anyhow::Error> {
         let tempdir = tempfile::tempdir()?;
         let dir = tempdir.path().join("repo");
