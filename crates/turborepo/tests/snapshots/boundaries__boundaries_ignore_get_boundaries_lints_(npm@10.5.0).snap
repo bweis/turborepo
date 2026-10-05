@@ -11,8 +11,8 @@ expression: query_output
           "import": "app"
         },
         {
-          "message": "import `../../lib/src/index` leaves the package",
-          "import": "../../lib/src/index"
+          "message": "import `../../lib/src/index.ts` leaves the package",
+          "import": "../../lib/src/index.ts"
         }
       ]
     }
