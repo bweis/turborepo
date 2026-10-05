@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
+
 mod common;
 
 #[test]
@@ -163,4 +165,259 @@ fn test_boundaries_central_tags_cli_output() -> Result<(), anyhow::Error> {
     );
 
     Ok(())
+}
+
+mod baseline {
+    use std::{fs, path::Path};
+
+    use super::common::{run_turbo, setup_fixture};
+
+    const BASELINE: &str = "boundaries-baseline.json";
+    const APP_INDEX: &str = "apps/my-app/index.ts";
+
+    fn boundaries(dir: &Path, args: &[&str]) -> (i32, String, String) {
+        let args: Vec<&str> = std::iter::once("boundaries")
+            .chain(args.iter().copied())
+            .collect();
+        let output = run_turbo(dir, &args);
+        (
+            output
+                .status
+                .code()
+                .expect("turbo exited with a status code"),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    fn assert_status(dir: &Path, args: &[&str], expected: i32) -> (String, String) {
+        let (status, stdout, stderr) = boundaries(dir, args);
+        assert_eq!(
+            status, expected,
+            "turbo boundaries {args:?} exited with {status}, expected \
+             {expected}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        (stdout, stderr)
+    }
+
+    fn edit(dir: &Path, path: &str, edit: impl FnOnce(String) -> String) {
+        let path = dir.join(path);
+        let contents = fs::read_to_string(&path).unwrap();
+        fs::write(&path, edit(contents)).unwrap();
+    }
+
+    fn squash(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && *c != '|')
+            .collect()
+    }
+
+    fn read_baseline(dir: &Path, path: &str) -> String {
+        fs::read_to_string(dir.join(path)).unwrap()
+    }
+
+    #[test]
+    fn test_baseline_ratchet() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries", "npm@10.5.0", dir, false)?;
+
+        // Without a baseline, the existing violations fail the check.
+        assert_status(dir, &[], 1);
+        assert!(!dir.join(BASELINE).exists());
+
+        // Record them.
+        let (stdout, _) = assert_status(dir, &["--update-baseline"], 0);
+        assert!(
+            stdout.contains("Updated boundaries-baseline.json with 14 violations"),
+            "{stdout}"
+        );
+        let baseline = read_baseline(dir, BASELINE);
+        insta::assert_snapshot!("boundaries_baseline_file", baseline);
+
+        // Updating again is a no-op.
+        assert_status(dir, &["--update-baseline"], 0);
+        assert_eq!(read_baseline(dir, BASELINE), baseline);
+
+        // Baselined violations are suppressed.
+        let (stdout, _) = assert_status(dir, &[], 0);
+        assert!(
+            stdout.contains("no issues found (14 suppressed by baseline)"),
+            "{stdout}"
+        );
+
+        // Unrelated edits that shift line numbers don't affect the baseline.
+        edit(dir, APP_INDEX, |contents| {
+            format!("// a new comment\n\n{contents}")
+        });
+        assert_status(dir, &[], 0);
+
+        // A new violation fails, even if it is identical to a baselined one in
+        // the same file.
+        edit(dir, APP_INDEX, |contents| {
+            format!("{contents}\nimport {{ data2 }} from \"utils/data\";\n")
+        });
+        let (stdout, stderr) = assert_status(dir, &[], 1);
+        assert!(
+            stdout.contains("1 issue found (14 suppressed by baseline)"),
+            "{stdout}"
+        );
+        assert!(
+            squash(&stderr).contains(&squash("cannot import package `utils`")),
+            "{stderr}"
+        );
+        edit(dir, APP_INDEX, |contents| {
+            contents.replace("\nimport { data2 } from \"utils/data\";\n", "")
+        });
+        assert_status(dir, &[], 0);
+
+        // Fixing a violation without updating the baseline is an error, so
+        // the violation can't silently be reintroduced.
+        edit(dir, APP_INDEX, |contents| {
+            contents.replace("import { data } from \"utils/data\";", "")
+        });
+        let (stdout, stderr) = assert_status(dir, &[], 1);
+        assert!(
+            stdout.contains("1 issue found (13 suppressed by baseline)"),
+            "{stdout}"
+        );
+        // Diagnostics are wrapped to the terminal width, so compare without
+        // whitespace.
+        let squashed = squash(&stderr);
+        assert!(
+            squashed.contains(&squash(
+                "Stale entry in boundaries baseline `boundaries-baseline.json` for package \
+                 `my-app`: `package-not-found` in `apps/my-app/index.ts` for import `utils` \
+                 (baselined: 1, found: 0)"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            squashed.contains(&squash("turbo boundaries --update-baseline")),
+            "{stderr}"
+        );
+
+        // Updating the baseline removes the fixed violation.
+        let (stdout, _) = assert_status(dir, &["--update-baseline"], 0);
+        assert!(stdout.contains("with 13 violations"), "{stdout}");
+        let baseline: serde_json::Value = serde_json::from_str(&read_baseline(dir, BASELINE))?;
+        assert!(
+            !baseline["violations"]["my-app"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["file"] == APP_INDEX && entry["import"] == "utils")
+        );
+        assert_status(dir, &[], 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_baseline_respects_filter() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries", "npm@10.5.0", dir, false)?;
+
+        assert_status(dir, &["--update-baseline"], 0);
+        let baseline = read_baseline(dir, BASELINE);
+
+        // Fix a violation in `my-app`.
+        edit(dir, APP_INDEX, |contents| {
+            contents.replace("import { data } from \"utils/data\";", "")
+        });
+
+        // `my-app` isn't checked, so its entries are neither matched nor stale.
+        let (stdout, _) = assert_status(dir, &["--filter=another"], 0);
+        assert!(stdout.contains("no issues found"), "{stdout}");
+        assert!(!stdout.contains("suppressed"), "{stdout}");
+
+        // Updating the baseline for other packages preserves `my-app`'s
+        // entries.
+        assert_status(dir, &["--filter=another", "--update-baseline"], 0);
+        assert_eq!(read_baseline(dir, BASELINE), baseline);
+
+        // Once `my-app` is in scope, the fixed violation is stale.
+        let (_, stderr) = assert_status(dir, &["--filter=my-app"], 1);
+        assert!(stderr.contains("Stale entry"), "{stderr}");
+        assert_status(dir, &["--filter=my-app", "--update-baseline"], 0);
+        assert_status(dir, &[], 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_baseline_path_is_configurable() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries", "npm@10.5.0", dir, false)?;
+
+        edit(dir, "turbo.json", |contents| {
+            contents.replacen(
+                "\"boundaries\": {",
+                "\"boundaries\": {\n    \"baseline\": \"config/boundaries.json\",",
+                1,
+            )
+        });
+
+        let (stdout, _) = assert_status(dir, &["--update-baseline"], 0);
+        assert!(
+            stdout.contains("Updated config/boundaries.json"),
+            "{stdout}"
+        );
+        assert!(dir.join("config/boundaries.json").exists());
+        assert!(!dir.join(BASELINE).exists());
+        assert_status(dir, &[], 0);
+
+        // A malformed baseline is an error rather than being ignored.
+        fs::write(dir.join("config/boundaries.json"), "{}")?;
+        let (_, stderr) = assert_status(dir, &[], 1);
+        assert!(
+            squash(&stderr).contains(&squash("invalid boundaries baseline")),
+            "{stderr}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_baseline_circular_dependencies() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries_circular", "npm@10.5.0", dir, false)?;
+
+        assert_status(dir, &[], 1);
+        assert_status(dir, &["--update-baseline"], 0);
+        let baseline: serde_json::Value = serde_json::from_str(&read_baseline(dir, BASELINE))?;
+        let root_entries = baseline["violations"]["//"]
+            .as_array()
+            .expect("cycles are recorded under the root package");
+        assert!(
+            root_entries
+                .iter()
+                .any(|entry| entry["rule"] == "circular-dependency"),
+            "{baseline}"
+        );
+
+        // Cycles are checked regardless of filters, so their entries are
+        // matched even when filtering.
+        assert_status(dir, &[], 0);
+        assert_status(dir, &["--filter=@repo/pkg-d"], 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_update_baseline_conflicts_with_ignore() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path();
+        setup_fixture("boundaries", "npm@10.5.0", dir, false)?;
+
+        let (status, _, stderr) = boundaries(dir, &["--update-baseline", "--ignore=all"]);
+        assert_ne!(status, 0);
+        assert!(stderr.contains("cannot be used with"), "{stderr}");
+        assert!(!dir.join(BASELINE).exists());
+
+        Ok(())
+    }
 }

@@ -1482,6 +1482,7 @@ fn query_boundary_diagnostic(
             span,
             text: _,
             path,
+            ..
         } => turborepo_query_api::BoundaryDiagnostic {
             message,
             path: Some(path.to_string()),
@@ -1496,6 +1497,7 @@ fn query_boundary_diagnostic(
             span,
             text: _,
             path,
+            ..
         } => turborepo_query_api::BoundaryDiagnostic {
             message,
             path: Some(path.to_string()),
@@ -1643,7 +1645,8 @@ fn query_boundary_diagnostic(
             import: None,
             reason: Some(glob),
         },
-        turborepo_boundaries::BoundariesDiagnostic::CircularDependency { .. } => {
+        turborepo_boundaries::BoundariesDiagnostic::CircularDependency { .. }
+        | turborepo_boundaries::BoundariesDiagnostic::StaleBaselineEntry { .. } => {
             turborepo_query_api::BoundaryDiagnostic {
                 message,
                 path: None,

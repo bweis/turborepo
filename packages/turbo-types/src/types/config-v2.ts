@@ -849,6 +849,22 @@ export interface RootBoundariesConfig extends BoundariesConfig {
    * @defaultValue `true`
    */
   importChecks?: boolean;
+  /**
+   * Assigns tags to packages by directory glob. Keys are globs matched against
+   * package directories relative to the repository root. A package receives
+   * every tag from every glob that matches its directory, in addition to the
+   * tags in its own `turbo.json`.
+   */
+  packageTags?: Record<string, Array<string>>;
+  /**
+   * Path to the boundaries baseline file, relative to the repository root.
+   * The baseline records existing violations so that `turbo boundaries`
+   * only fails on new ones. Generate or update it with
+   * `turbo boundaries --update-baseline`.
+   *
+   * @defaultValue `"boundaries-baseline.json"`
+   */
+  baseline?: string;
 }
 
 export const isRootSchemaV2 = (schema: Schema): schema is RootSchema =>

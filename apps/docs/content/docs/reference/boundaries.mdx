@@ -242,3 +242,83 @@ If you'd like to adopt tag rules before fixing every import violation, you can t
 ```
 
 With `importChecks` set to `false`, `turbo boundaries` skips reading your source files, so no import violations are reported (including the type-only import check for type declaration packages). Tag rules and circular dependency detection still run. `importChecks` defaults to `true` and can only be set in the root `turbo.json`.
+
+## Adopting boundaries in an existing repository
+
+Large repositories often have existing violations that can't all be fixed before enabling `turbo boundaries` in CI. A baseline file records the violations that exist today so that only new violations fail the check. Fix the recorded violations over time to ratchet the baseline down.
+
+To create or update the baseline, run:
+
+```bash title="Terminal"
+turbo boundaries --update-baseline
+```
+
+This checks your repository and writes every current violation to `boundaries-baseline.json` at the root of the repository. Commit this file. From then on, `turbo boundaries`:
+
+- Suppresses violations recorded in the baseline, and reports how many were suppressed.
+- Fails on violations that are not recorded in the baseline.
+- Fails on stale baseline entries: violations that were recorded but have since been fixed. Run `turbo boundaries --update-baseline` to remove them, so that a fixed violation can't be reintroduced without anyone noticing.
+
+The baseline is a machine-owned file. Rather than editing it by hand, rerun `turbo boundaries --update-baseline`.
+
+### Baseline format
+
+Entries are grouped by package and don't contain line numbers, so unrelated edits to a file don't invalidate the baseline:
+
+```json title="./boundaries-baseline.json"
+{
+  "version": 1,
+  "violations": {
+    "//": [
+      {
+        "rule": "circular-dependency",
+        "cycle": "@repo/a -> @repo/b -> @repo/a",
+        "count": 1
+      }
+    ],
+    "web": [
+      {
+        "rule": "denied-tag",
+        "package": "@repo/internal-ui",
+        "tag": "internal",
+        "count": 1
+      },
+      {
+        "file": "apps/web/src/index.ts",
+        "rule": "package-not-found",
+        "import": "lodash",
+        "count": 2
+      }
+    ]
+  }
+}
+```
+
+Each entry identifies a violation by its package, its file (relative to the repository root), its rule, and its subject (the import, the related package and tag, or the cycle). `count` is the number of times that violation occurs, so adding one more identical violation to the same file fails the check. Circular dependencies are recorded under the root package, `//`.
+
+| Rule                    | Violation                                                               |
+| ----------------------- | ----------------------------------------------------------------------- |
+| `import-leaves-package` | Importing a file outside of the package's directory                     |
+| `package-not-found`     | Importing a package that is not a dependency                            |
+| `not-type-only-import`  | Importing a type declaration package without a type-only import         |
+| `tag-not-in-allowlist`  | Depending on, or being depended on by, a package without an allowed tag |
+| `denied-tag`            | Depending on, or being depended on by, a package with a denied tag      |
+| `circular-dependency`   | A cycle in the package graph                                            |
+
+Some problems can't be added to the baseline because they mean that code is not being checked at all: files that fail to parse, paths that aren't valid UTF-8, and invalid `boundaries` configuration. `turbo boundaries --update-baseline` still reports these and exits with an error until they're fixed.
+
+### Filtering
+
+When you use `--filter`, only the selected packages are checked. Baseline entries for other packages are left alone: they're not reported as stale, and `turbo boundaries --update-baseline --filter=<package>` only replaces the entries for the selected packages. Circular dependencies are always checked, as are entries for packages that no longer exist.
+
+### Configuring the baseline location
+
+Use the [`boundaries.baseline`](/docs/reference/configuration#baseline) key in your root `turbo.json` to store the baseline somewhere else:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "baseline": "config/boundaries-baseline.json"
+  }
+}
+```

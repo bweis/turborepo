@@ -1327,6 +1327,22 @@ Each key is a glob matched against package directories relative to the repositor
 
 `turbo boundaries` reports an error for invalid globs and a warning for globs that don't match any package.
 
+### `baseline`
+
+Default: `"boundaries-baseline.json"`
+
+Path to the [boundaries baseline file](/docs/reference/boundaries#adopting-boundaries-in-an-existing-repository), relative to the root of the repository. The baseline records existing violations so that `turbo boundaries` only fails on new ones. Create or update it with `turbo boundaries --update-baseline`.
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "baseline": "config/boundaries-baseline.json"
+  }
+}
+```
+
+This key can only be used in the root `turbo.json`.
+
 ## Remote caching
 
 The global `remoteCache` option has a variety of fields for configuring remote cache usage

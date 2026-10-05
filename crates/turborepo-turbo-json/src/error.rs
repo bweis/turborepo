@@ -380,6 +380,17 @@ pub enum Error {
         text: NamedSource<String>,
     },
 
+    #[error(
+        "The \"boundaries.baseline\" key can only be used in the root turbo.json. Please remove \
+         it from Package Configurations."
+    )]
+    BoundariesBaselineInPackage {
+        #[label("baseline key found here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<String>,
+    },
+
     #[error("The \"global\" key requires \"futureFlags.globalConfiguration\" to be enabled.")]
     #[diagnostic(help(
         "Add `\"futureFlags\": {{ \"globalConfiguration\": true }}` to your root turbo.json."

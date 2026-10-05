@@ -477,15 +477,21 @@ async fn run_main(
 
             Ok(0)
         }
-        Command::Boundaries { ignore, reason, .. } => {
+        Command::Boundaries {
+            ignore,
+            reason,
+            update_baseline,
+            ..
+        } => {
             let event = CommandEventBuilder::new("boundaries").with_parent(&root_telemetry);
             let ignore = *ignore;
             let reason = reason.clone();
+            let update_baseline = *update_baseline;
 
             event.track_call();
             let base = CommandBase::new(cli_args.clone(), repo_root, version, color_config)?;
 
-            Ok(boundaries::run(base, event, ignore, reason).await?)
+            Ok(boundaries::run(base, event, ignore, reason, update_baseline).await?)
         }
         #[allow(unused_variables)]
         Command::Daemon {

@@ -236,6 +236,17 @@
       "description": "Configuration for `turbo boundaries`.\n\nAllows users to restrict a package's dependencies and dependents.",
       "type": "object",
       "properties": {
+        "baseline": {
+          "description": "Path to the boundaries baseline file, relative to the repository root.\n\nThe baseline records existing violations so that `turbo boundaries` only fails on new ones. Generate or update it with `turbo boundaries --update-baseline`. Only valid in the root `turbo.json`.\n\nDefaults to `boundaries-baseline.json`.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/String"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "dependencies": {
           "description": "Rules for a package's dependencies.\n\nRestricts which packages this package can import.",
           "anyOf": [
@@ -285,6 +296,17 @@
           "anyOf": [
             {
               "$ref": "#/definitions/Boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "packageTags": {
+          "description": "Assigns tags to packages by directory glob.\n\nKeys are globs matched against package directories relative to the repository root. A package receives every tag from every glob that matches its directory, in addition to the tags in its own `turbo.json`. Only valid in the root `turbo.json`.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Map_of_Array_of_String"
             },
             {
               "type": "null"
@@ -530,6 +552,12 @@
             }
           ]
         }
+      }
+    },
+    "Map_of_Array_of_String": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Array_of_String"
       }
     },
     "Map_of_TagRules": {

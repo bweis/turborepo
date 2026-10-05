@@ -1077,6 +1077,10 @@ pub enum Command {
         ignore: Option<BoundariesIgnore>,
         #[usage(long, requires = "ignore")]
         reason: Option<String>,
+        /// Write all current violations to the boundaries baseline file so
+        /// that only new violations are reported
+        #[usage(long, conflicts = "ignore")]
+        update_baseline: bool,
     },
     /// Generate the autocompletion script for the specified shell
     Completion { shell: CompletionShell },

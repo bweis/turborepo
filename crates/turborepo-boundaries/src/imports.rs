@@ -351,6 +351,7 @@ fn check_aliased_workspace_import(
 
     Some(BoundariesDiagnostic::PackageNotFound {
         path: file_path.to_owned(),
+        package_name: dependency_locations.package.to_owned(),
         name: target_package.to_string(),
         help: Some(format!(
             "`{import}` is a tsconfig path alias that resolves into package `{target_package}`"
@@ -470,6 +471,7 @@ pub(crate) fn check_package_import(
     if package_name.starts_with("@types/") && matches!(import_type, ImportType::Value) {
         return Some(BoundariesDiagnostic::NotTypeOnlyImport {
             path: file_path.to_owned(),
+            package_name: dependency_locations.package.to_owned(),
             import: import.to_string(),
             span,
             text: NamedSource::new(file_path.as_str(), file_content.clone()),
@@ -497,6 +499,7 @@ pub(crate) fn check_package_import(
                 ImportType::Type => None,
                 ImportType::Value => Some(BoundariesDiagnostic::NotTypeOnlyImport {
                     path: file_path.to_owned(),
+                    package_name: dependency_locations.package.to_owned(),
                     import: import.to_string(),
                     span,
                     text: NamedSource::new(file_path.as_str(), file_content.clone()),
@@ -506,6 +509,7 @@ pub(crate) fn check_package_import(
 
         return Some(BoundariesDiagnostic::PackageNotFound {
             path: file_path.to_owned(),
+            package_name: dependency_locations.package.to_owned(),
             name: package_node.to_string(),
             help: None,
             span,
