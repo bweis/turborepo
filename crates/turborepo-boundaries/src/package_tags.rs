@@ -77,10 +77,14 @@ impl PackageTagIndex {
         let mut index = PackageTagIndex::default();
         for (name, directory) in packages {
             let own_tags = turbo_json_provider.package_tags(name);
+            // `packageTags` assigns tags to workspace packages only. The root
+            // package's empty directory would otherwise match globs such as
+            // `**`, which would also hide them from the unmatched-glob warning.
+            let is_root = *name == PackageName::Root || directory.as_str().is_empty();
             let directory = directory.to_unix();
             let mut matching = entries
                 .iter_mut()
-                .filter(|entry| entry.glob.is_match(directory.as_str()))
+                .filter(|entry| !is_root && entry.glob.is_match(directory.as_str()))
                 .peekable();
 
             // Packages without any tag source keep having no entry, which
@@ -274,6 +278,27 @@ mod tests {
 
         assert_eq!(tags_of(&resolved.index, "nested"), None);
         assert_eq!(resolved.warnings.len(), 1);
+    }
+
+    #[test]
+    fn root_package_is_never_matched() {
+        let config = package_tags_config(r#"{"**": ["everything"]}"#);
+        let root_directory = AnchoredSystemPathBuf::from_raw("").unwrap();
+        let resolved = PackageTagIndex::resolve(
+            &MockTurboJson::default(),
+            Some(&config),
+            [(&PackageName::Root, root_directory.as_ref())],
+        );
+
+        assert!(resolved.index.get(&PackageName::Root).is_none());
+        // With only the root package, `**` matches nothing and is reported.
+        assert_eq!(
+            resolved.warnings,
+            vec![
+                "`boundaries.packageTags` glob `**` does not match any package directory"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

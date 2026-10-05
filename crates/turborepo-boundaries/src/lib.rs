@@ -770,19 +770,6 @@ impl BoundariesChecker {
             }
         }
 
-        let package_tags = {
-            let _span = info_span!("resolve_package_tags").entered();
-            let resolved = PackageTagIndex::resolve(
-                ctx.turbo_json_provider,
-                ctx.root_boundaries_config
-                    .and_then(|boundaries| boundaries.package_tags.as_ref()),
-                packages.iter().map(|scope| (&scope.name, scope.directory)),
-            );
-            result.diagnostics.extend(resolved.diagnostics);
-            result.warnings.extend(resolved.warnings);
-            resolved.index
-        };
-
         let global_implicit_dependencies = ctx
             .turbo_json_provider
             .implicit_dependencies(&PackageName::Root);
@@ -800,14 +787,43 @@ impl BoundariesChecker {
         );
 
         let packages_to_check: Vec<_> = packages
-            .into_iter()
+            .iter()
             .filter(|scope| {
                 matches!(scope.name, PackageName::Other(_))
                     && ctx.filtered_pkgs.contains(&scope.name)
                     && scope.is_boundary_checkable()
             })
-            .map(|scope| (scope.name, scope.name_source, scope.directory))
+            .map(|scope| (scope.name.clone(), scope.name_source, scope.directory))
             .collect();
+
+        let package_tags_config = ctx
+            .root_boundaries_config
+            .and_then(|boundaries| boundaries.package_tags.as_ref());
+        // Tags are only read by tag rules and package-level rules. Without
+        // either (and without `packageTags` to validate), skip loading every
+        // package's turbo.json.
+        let needs_package_tags = package_tags_config.is_some()
+            || rules_map.as_ref().is_some_and(|rules| !rules.is_empty())
+            || packages_to_check.iter().any(|(name, ..)| {
+                ctx.turbo_json_provider
+                    .boundaries_config(name)
+                    .is_some_and(|boundaries| {
+                        boundaries.dependencies.is_some() || boundaries.dependents.is_some()
+                    })
+            });
+        let package_tags = if needs_package_tags {
+            let _span = info_span!("resolve_package_tags").entered();
+            let resolved = PackageTagIndex::resolve(
+                ctx.turbo_json_provider,
+                package_tags_config,
+                packages.iter().map(|scope| (&scope.name, scope.directory)),
+            );
+            result.diagnostics.extend(resolved.diagnostics);
+            result.warnings.extend(resolved.warnings);
+            resolved.index
+        } else {
+            PackageTagIndex::default()
+        };
 
         let progress = if show_progress {
             println!("Checking packages...");
@@ -2118,6 +2134,71 @@ mod tests {
         assert_eq!(assigned, "\"unsafe\"");
         let assigned_in = &text.inner()[..span.offset()];
         assert!(assigned_in.ends_with(r#""packages/unsafe-*": ["#));
+    }
+
+    /// Counts tag lookups so tests can assert that tags are not loaded when
+    /// no rule reads them.
+    #[derive(Default)]
+    struct CountingTurboJson {
+        package_tags_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TurboJsonProvider for CountingTurboJson {
+        fn has_turbo_json(&self, _: &PackageName) -> bool {
+            false
+        }
+
+        fn boundaries_config(&self, _: &PackageName) -> Option<&BoundariesConfig> {
+            None
+        }
+
+        fn package_tags(&self, _: &PackageName) -> Option<&Spanned<Vec<Spanned<String>>>> {
+            self.package_tags_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+
+        fn implicit_dependencies(&self, _: &PackageName) -> HashMap<String, Spanned<()>> {
+            HashMap::new()
+        }
+    }
+
+    #[test]
+    fn package_tags_are_only_loaded_when_rules_read_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let packages = vec![
+            PackageName::Other("pkg-a".into()),
+            PackageName::Other("pkg-b".into()),
+        ];
+        let graph = MockGraph::new(packages.clone()).with_dependency("pkg-a", "pkg-b");
+        let filtered: HashSet<_> = packages.into_iter().collect();
+        let check = |config: Option<&BoundariesConfig>| {
+            let provider = CountingTurboJson::default();
+            BoundariesChecker::check_boundaries(
+                &BoundariesContext {
+                    repo_root,
+                    pkg_dep_graph: &graph,
+                    turbo_json_provider: &provider,
+                    root_boundaries_config: config,
+                    filtered_pkgs: &filtered,
+                },
+                false,
+            )
+            .unwrap();
+            provider
+                .package_tags_calls
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        assert_eq!(check(None), 0);
+        assert_eq!(check(Some(&root_boundaries_config(r#"{ "tags": {} }"#))), 0);
+        assert_eq!(
+            check(Some(&root_boundaries_config(
+                r#"{ "tags": { "web": { "dependencies": { "deny": ["node"] } } } }"#
+            ))),
+            2
+        );
     }
 
     #[test]
