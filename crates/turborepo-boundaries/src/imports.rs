@@ -194,10 +194,7 @@ pub(crate) fn check_import(
             );
         }
         Some(_) => {
-            let line = source_text[..span.start as usize]
-                .chars()
-                .filter(|&c| c == '\n')
-                .count();
+            let line = line_number(source_text, span.start as usize);
             warnings.push(format!("ignoring import on line {line} in {file_path}"));
 
             return Ok(());
@@ -324,6 +321,15 @@ pub(crate) fn check_file_import(
 /// etc.) that are available at runtime but are not Node.js builtins. Without
 /// this check, a project with `@types/bun` in devDependencies would incorrectly
 /// flag `import { $ } from "bun"` as a type-only import.
+/// Returns the 1-based line number of the byte `offset` in `source`.
+fn line_number(source: &str, offset: usize) -> usize {
+    source.as_bytes()[..offset]
+        .iter()
+        .filter(|&&byte| byte == b'\n')
+        .count()
+        + 1
+}
+
 fn is_bun_builtin(import: &str) -> bool {
     import == "bun" || import.starts_with("bun:")
 }
@@ -512,6 +518,14 @@ mod test {
     #[test_case("foo/bar/baz", "foo"; "multiple slashes")]
     fn test_get_package_name(import: &str, expected: &str) {
         assert_eq!(get_package_name(import), expected);
+    }
+
+    #[test]
+    fn line_numbers_are_one_based() {
+        let source = "import a from 'a';\n// comment\nimport b from 'b';\n";
+        assert_eq!(line_number(source, 0), 1);
+        assert_eq!(line_number(source, source.find("'a'").unwrap()), 1);
+        assert_eq!(line_number(source, source.find("'b'").unwrap()), 3);
     }
 
     fn make_tsconfig_alias_test_args(
