@@ -258,6 +258,11 @@ pub struct BaselineScope {
     known: HashSet<String>,
     /// Whether import rules were skipped because import checks are disabled.
     import_checks_skipped: bool,
+    /// Files (relative to the repository root, with unix separators) that
+    /// could not be fully checked in this run, e.g. because they failed to
+    /// parse. Their entries can't be matched reliably, so they are neither
+    /// reported as stale nor replaced by `--update-baseline`.
+    unchecked_files: HashSet<String>,
 }
 
 impl BaselineScope {
@@ -277,6 +282,7 @@ impl BaselineScope {
             checked: Some(checked.into_iter().collect()),
             known: known.into_iter().collect(),
             import_checks_skipped: false,
+            unchecked_files: HashSet::new(),
         }
     }
 
@@ -284,6 +290,22 @@ impl BaselineScope {
     pub fn with_import_checks(mut self, enabled: bool) -> Self {
         self.import_checks_skipped = !enabled;
         self
+    }
+
+    /// Marks every file that `diagnostics` report as not fully checked (see
+    /// [`BoundariesDiagnostic::unchecked_file`]) as out of scope. Returns the
+    /// number of such files.
+    pub fn exclude_unchecked_files<'a>(
+        &mut self,
+        repo_root: &AbsoluteSystemPath,
+        diagnostics: impl IntoIterator<Item = &'a BoundariesDiagnostic>,
+    ) -> usize {
+        for diagnostic in diagnostics {
+            if let Some(file) = diagnostic.unchecked_file() {
+                self.unchecked_files.insert(relative_file(repo_root, file));
+            }
+        }
+        self.unchecked_files.len()
     }
 
     /// The scope of a boundaries check run with `ctx`.
@@ -320,6 +342,10 @@ impl BaselineScope {
     pub fn contains_entry(&self, package: &str, key: &ViolationKey) -> bool {
         self.contains(package)
             && !(self.import_checks_skipped && IMPORT_RULES.contains(&key.rule.as_str()))
+            && key
+                .file
+                .as_ref()
+                .is_none_or(|file| !self.unchecked_files.contains(file))
     }
 }
 
@@ -375,12 +401,20 @@ impl Baseline {
         if configured.trim().is_empty() {
             return Err(invalid("the path is empty"));
         }
-        if configured.ends_with('/') || configured.ends_with('\\') {
+        // Use the same, platform independent form on every platform. This also
+        // rules out Windows root-relative (`\\foo`) and drive (`C:foo`) paths.
+        if configured.contains('\\') {
+            return Err(invalid("use `/` as the path separator"));
+        }
+        if configured.contains(':') {
+            return Err(invalid("the path may not contain `:`"));
+        }
+        if configured.ends_with('/') {
             return Err(invalid("the path must point to a file"));
         }
-        // The baseline is written by `--update-baseline`, so it must stay
-        // inside the repository.
-        if configured.split(['/', '\\']).any(|segment| segment == "..") {
+        // The baseline is written by `--update-baseline`, so the path must not
+        // lexically leave the repository.
+        if configured.split('/').any(|segment| segment == "..") {
             return Err(invalid("the path may not contain `..`"));
         }
         let relative = RelativeUnixPathBuf::new(configured)
@@ -512,29 +546,28 @@ impl Baseline {
     }
 
     /// Returns the baseline that `--update-baseline` should write: entries
-    /// outside of `scope` are preserved, entries in scope are replaced with
+    /// outside of `scope` (packages that weren't checked, and files that
+    /// couldn't be checked) are preserved, entries in scope are replaced with
     /// `current`.
     pub fn update(&self, current: Baseline, scope: &BaselineScope) -> Baseline {
-        let mut violations: BTreeMap<_, _> = self
-            .violations
-            .iter()
-            .map(|(package, entries)| {
-                let entries: BTreeMap<_, _> = entries
-                    .iter()
-                    .filter(|(key, _)| !scope.contains_entry(package, key))
-                    .map(|(key, count)| (key.clone(), *count))
-                    .collect();
-                (package.clone(), entries)
-            })
-            .filter(|(_, entries)| !entries.is_empty())
-            .collect();
-        for (package, entries) in current.violations {
-            let existing = violations.entry(package).or_default();
-            for (key, count) in entries {
-                *existing.entry(key).or_default() += count;
+        let mut updated = Baseline::default();
+        for (package, entries) in &self.violations {
+            for (key, &count) in entries {
+                if !scope.contains_entry(package, key) {
+                    updated.add(package.clone(), key.clone(), count);
+                }
             }
         }
-        Baseline { violations }
+        for (package, entries) in current.violations {
+            for (key, count) in entries {
+                // An unchecked file's preserved entries already account for
+                // whatever this run found in it.
+                if scope.contains_entry(&package, &key) {
+                    updated.add(package.clone(), key, count);
+                }
+            }
+        }
+        updated
     }
 
     /// Suppresses violations in `result` that are covered by the baseline and
@@ -748,7 +781,10 @@ mod tests {
         let root = repo_root();
         let diagnostics = [
             BoundariesDiagnostic::ParseError(file(&root, "apps/web/a.ts"), "oops".into()),
-            BoundariesDiagnostic::InvalidPath { path: "bad".into() },
+            BoundariesDiagnostic::InvalidPath {
+                path: "bad".into(),
+                file: file(&root, "apps/web/b.ts"),
+            },
             BoundariesDiagnostic::PackageBoundariesHasTags {
                 span: None,
                 text: text(),
@@ -1027,6 +1063,86 @@ mod tests {
     }
 
     #[test]
+    fn unparseable_files_keep_their_entries() {
+        let root = repo_root();
+        let baseline = Baseline::from_diagnostics(
+            &root,
+            &[
+                package_not_found(&root, "web", "apps/web/broken.ts", "lodash", 0),
+                package_not_found(&root, "web", "apps/web/broken.ts", "lodash", 1),
+                package_not_found(&root, "web", "apps/web/ok.ts", "lodash", 0),
+                package_not_found(&root, "web", "apps/web/fixed.ts", "lodash", 0),
+            ],
+        );
+        // `broken.ts` now has a syntax error, so none of its imports are
+        // checked. `fixed.ts` really was fixed.
+        let diagnostics = vec![
+            BoundariesDiagnostic::ParseError(file(&root, "apps/web/broken.ts"), "oops".into()),
+            package_not_found(&root, "web", "apps/web/ok.ts", "lodash", 0),
+        ];
+        let mut scope = BaselineScope::all();
+        assert_eq!(scope.exclude_unchecked_files(&root, &diagnostics), 1);
+
+        // A normal run doesn't report `broken.ts`'s entries as stale.
+        let mut result = result_with(diagnostics.clone());
+        baseline.apply(&root, DEFAULT_BASELINE_PATH, &scope, &mut result);
+        assert_eq!(result.suppressed_by_baseline, 1);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| d.rule_id())
+                .collect::<Vec<_>>(),
+            ["parse-error", "stale-baseline-entry"]
+        );
+        assert!(
+            result.diagnostics[1].to_string().contains("fixed.ts"),
+            "{}",
+            result.diagnostics[1]
+        );
+
+        // Updating keeps `broken.ts`'s entries untouched and drops `fixed.ts`.
+        let updated = baseline.update(Baseline::from_diagnostics(&root, &diagnostics), &scope);
+        let expected = Baseline::from_diagnostics(
+            &root,
+            &[
+                package_not_found(&root, "web", "apps/web/broken.ts", "lodash", 0),
+                package_not_found(&root, "web", "apps/web/broken.ts", "lodash", 1),
+                package_not_found(&root, "web", "apps/web/ok.ts", "lodash", 0),
+            ],
+        );
+        assert_eq!(updated, expected);
+    }
+
+    #[test]
+    fn partially_checked_files_are_not_double_counted() {
+        let root = repo_root();
+        let baseline = Baseline::from_diagnostics(
+            &root,
+            &[package_not_found(
+                &root,
+                "web",
+                "apps/web/a.ts",
+                "lodash",
+                0,
+            )],
+        );
+        // One import in `a.ts` resolved to a non-UTF-8 path; the rest of the
+        // file was still checked.
+        let diagnostics = vec![
+            BoundariesDiagnostic::InvalidPath {
+                path: "bad".into(),
+                file: file(&root, "apps/web/a.ts"),
+            },
+            package_not_found(&root, "web", "apps/web/a.ts", "lodash", 0),
+        ];
+        let mut scope = BaselineScope::all();
+        scope.exclude_unchecked_files(&root, &diagnostics);
+        let updated = baseline.update(Baseline::from_diagnostics(&root, &diagnostics), &scope);
+        assert_eq!(updated, baseline);
+    }
+
+    #[test]
     fn serialization_is_deterministic_and_round_trips() {
         let root = repo_root();
         let diagnostics = vec![
@@ -1152,6 +1268,10 @@ mod tests {
             "config/../../outside.json",
             "config/..",
             "config/",
+            "\\outside.json",
+            "config\\baseline.json",
+            "C:outside.json",
+            "C:/outside.json",
         ] {
             let config = BoundariesConfig {
                 baseline: Some(turborepo_errors::Spanned::new(invalid.to_string())),

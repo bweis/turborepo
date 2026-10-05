@@ -1596,7 +1596,7 @@ fn query_boundary_diagnostic(
                 reason: None,
             }
         }
-        turborepo_boundaries::BoundariesDiagnostic::InvalidPath { path } => {
+        turborepo_boundaries::BoundariesDiagnostic::InvalidPath { path, .. } => {
             turborepo_query_api::BoundaryDiagnostic {
                 message,
                 path: Some(path),

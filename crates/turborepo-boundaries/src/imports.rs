@@ -162,6 +162,7 @@ fn check_import_as_tsconfig_path_alias(
                     true,
                     Some(BoundariesDiagnostic::InvalidPath {
                         path: path.to_string_lossy().to_string(),
+                        file: file_path.to_owned(),
                     }),
                 ));
             };

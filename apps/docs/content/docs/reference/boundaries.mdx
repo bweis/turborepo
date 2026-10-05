@@ -319,6 +319,8 @@ Circular dependencies are recorded under the root package, `//`, and identified 
 
 Some problems can't be added to the baseline because they mean that code is not being checked at all: files that fail to parse, paths that aren't valid UTF-8, and invalid `boundaries` configuration. `turbo boundaries --update-baseline` still reports these and exits with an error until they're fixed.
 
+If a file can't be checked (for example, because of a syntax error), its baseline entries are left alone: they're not reported as stale, and `turbo boundaries --update-baseline` keeps them unchanged until the file can be checked again.
+
 ### Filtering
 
 When you use `--filter`, only the selected packages are checked. Baseline entries for other packages are left alone: they're not reported as stale, and `turbo boundaries --update-baseline --filter=<package>` only replaces the entries for the selected packages. Circular dependencies are always checked, as are entries for packages that no longer exist.
