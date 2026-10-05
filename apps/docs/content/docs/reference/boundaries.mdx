@@ -26,6 +26,18 @@ This command will notify for two types of violations:
 - Importing a file outside of the package's directory
 - Importing a package that is not specified as a dependency in the package's `package.json`
 
+### TypeScript path aliases
+
+Imports that match a `paths` entry in the package's `tsconfig.json` are resolved before they're checked:
+
+- An alias that resolves to a file inside the package is a local import.
+- An alias that resolves into another workspace package is treated as an import of that package, so it's allowed when that package is a dependency and reported as an undeclared dependency otherwise.
+- An alias that resolves to a file outside of every workspace package is reported as importing a file outside of the package's directory.
+
+For example, with `"@ui/*": ["../../packages/ui/src/*"]` in `apps/web/tsconfig.json`, `import { Button } from "@ui/button"` is an import of the package in `packages/ui` (for example, `@repo/ui`), so `apps/web` needs `@repo/ui` in its `package.json` dependencies.
+
+Specifiers that walk up the directory tree with `..` (like `@/../../packages/ui/src/button`) are always reported as leaving the package, even when they start with an alias.
+
 ## Tags
 
 Boundaries also has a feature that lets you add tags to packages. These tags can be used to create rules

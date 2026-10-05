@@ -2,7 +2,9 @@
   "compilerOptions": {
     "paths": {
       "@/*": ["./*"],
-      "!": ["../../packages/another/index.jsx"]
+      "!": ["../../packages/another/index.jsx"],
+      "@utils/*": ["../../packages/utils/*"],
+      "@shared/*": ["../../shared/*"]
     },
     "strictNullChecks": true
   }

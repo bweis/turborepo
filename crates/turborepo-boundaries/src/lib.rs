@@ -34,7 +34,7 @@ use turborepo_repository::{
 use turborepo_ui::{BOLD_GREEN, BOLD_RED, ColorConfig, color};
 use unrs_resolver::Resolver;
 
-use crate::imports::DependencyLocations;
+use crate::imports::{DependencyLocations, WorkspacePackageDirectories};
 
 #[derive(Clone)]
 pub struct PackageScope<'a> {
@@ -236,6 +236,8 @@ pub enum BoundariesDiagnostic {
     PackageNotFound {
         path: AbsoluteSystemPathBuf,
         name: String,
+        #[help]
+        help: Option<String>,
         #[label("package imported here")]
         span: SourceSpan,
         #[source_code]
@@ -573,6 +575,17 @@ impl BoundariesChecker {
             .turbo_json_provider
             .implicit_dependencies(&PackageName::Root);
 
+        // Every checkable package, regardless of the filter, can be the target of
+        // an import, so the directory lookup covers the whole workspace.
+        let workspace_packages = WorkspacePackageDirectories::new(
+            packages
+                .iter()
+                .filter(|scope| {
+                    matches!(scope.name, PackageName::Other(_)) && scope.is_boundary_checkable()
+                })
+                .map(|scope| (ctx.repo_root.resolve(scope.directory), scope.name.clone())),
+        );
+
         let packages_to_check: Vec<_> = packages
             .into_iter()
             .filter(|scope| {
@@ -606,6 +619,7 @@ impl BoundariesChecker {
                                     package_directory,
                                     &rules_map,
                                     &global_implicit_dependencies,
+                                    &workspace_packages,
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -646,6 +660,7 @@ impl BoundariesChecker {
         package_directory: &turbopath::AnchoredSystemPath,
         tag_rules: &Option<ProcessedRulesMap>,
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
+        workspace_packages: &WorkspacePackageDirectories,
     ) -> Result<BoundariesResult, Error>
     where
         G: PackageGraphProvider,
@@ -661,6 +676,7 @@ impl BoundariesChecker {
             package_directory,
             &implicit_dependencies,
             global_implicit_dependencies,
+            workspace_packages,
         )?;
         result.merge(file_result);
 
@@ -688,6 +704,7 @@ impl BoundariesChecker {
         package_directory: &turbopath::AnchoredSystemPath,
         implicit_dependencies: &HashMap<String, Spanned<()>>,
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
+        workspace_packages: &WorkspacePackageDirectories,
     ) -> Result<BoundariesResult, Error>
     where
         G: PackageGraphProvider,
@@ -769,6 +786,7 @@ impl BoundariesChecker {
             external_declarations: ctx.pkg_dep_graph.external_declarations(package_name),
             implicit_dependencies,
             global_implicit_dependencies,
+            workspace_packages,
         };
 
         type FileResult = Result<(Vec<BoundariesDiagnostic>, Vec<String>), Error>;

@@ -1492,6 +1492,7 @@ fn query_boundary_diagnostic(
         },
         turborepo_boundaries::BoundariesDiagnostic::PackageNotFound {
             name,
+            help: _,
             span,
             text: _,
             path,

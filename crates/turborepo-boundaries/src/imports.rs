@@ -9,7 +9,10 @@ use oxc_ast::ast::Comment;
 use oxc_span::Span;
 use tracing::debug;
 use turbo_trace::ImportType;
-use turbopath::{AbsoluteSystemPath, AnchoredSystemPathBuf, PathRelation, RelativeUnixPath};
+use turbopath::{
+    AbsoluteSystemPath, AbsoluteSystemPathBuf, AnchoredSystemPathBuf, PathRelation,
+    RelativeUnixPath,
+};
 use turborepo_errors::Spanned;
 use turborepo_repository::{
     external_resolution::PackageExternalDeclarations,
@@ -28,6 +31,9 @@ pub struct DependencyLocations<'a> {
     pub(crate) external_declarations: PackageExternalDeclarations<'a>,
     pub(crate) implicit_dependencies: &'a HashMap<String, Spanned<()>>,
     pub(crate) global_implicit_dependencies: &'a HashMap<String, Spanned<()>>,
+    // The directories of every workspace package, used to attribute files that
+    // a tsconfig path alias resolves to back to the package that owns them
+    pub(crate) workspace_packages: &'a WorkspacePackageDirectories,
 }
 
 impl<'a> DependencyLocations<'a> {
@@ -53,6 +59,37 @@ impl<'a> DependencyLocations<'a> {
     }
 }
 
+/// Maps workspace package directories to their package names, so a resolved
+/// file path can be attributed to the workspace package that contains it.
+///
+/// Built once per `check_boundaries` run and shared across all packages.
+#[derive(Debug, Default)]
+pub struct WorkspacePackageDirectories {
+    by_directory: HashMap<AbsoluteSystemPathBuf, PackageName>,
+}
+
+impl WorkspacePackageDirectories {
+    pub(crate) fn new(
+        packages: impl IntoIterator<Item = (AbsoluteSystemPathBuf, PackageName)>,
+    ) -> Self {
+        Self {
+            by_directory: packages.into_iter().collect(),
+        }
+    }
+
+    /// Returns the workspace package whose directory contains `path`. When
+    /// packages are nested, the deepest (most specific) package wins.
+    ///
+    /// Costs one hash lookup per ancestor of `path`.
+    pub(crate) fn package_containing(&self, path: &AbsoluteSystemPath) -> Option<&PackageName> {
+        if self.by_directory.is_empty() {
+            return None;
+        }
+        path.ancestors()
+            .find_map(|directory| self.by_directory.get(directory))
+    }
+}
+
 /// Checks if the given import can be resolved as a tsconfig path alias via the
 /// resolver, e.g. `@/types/foo` -> `./src/foo` or `features/foo` ->
 /// `./src/features/foo`, and if so, checks the resolved path against package
@@ -64,20 +101,25 @@ impl<'a> DependencyLocations<'a> {
 /// imports instead of being incorrectly flagged as undeclared dependencies.
 ///
 /// Returns `Ok((true, diag))` if the import was resolved as a tsconfig path
-/// alias (local or cross-package — the latter produces an
-/// `ImportLeavesPackage` diagnostic via [`check_file_import`]).
+/// alias. If the alias resolves outside the current package:
+/// - into another workspace package, it is treated as an import of that package
+///   and validated against declared dependencies (see
+///   [`check_aliased_workspace_import`]),
+/// - outside of every workspace package, or via a specifier that itself walks
+///   up with `..` segments (e.g. `@/../../packages/ui/src`), it produces an
+///   `ImportLeavesPackage` diagnostic via [`check_file_import`].
 ///
 /// Returns `Ok((false, None))` if the resolved path goes through
 /// `node_modules` (a real npm package) or if the resolver could not resolve
 /// the import. The caller should then fall through to `check_package_import`.
 fn check_import_as_tsconfig_path_alias(
     resolver: &Resolver,
-    package_name: &PackageName,
     package_root: &AbsoluteSystemPath,
     span: SourceSpan,
     file_path: &AbsoluteSystemPath,
     file_content: &Arc<str>,
     import: &str,
+    dependency_locations: DependencyLocations<'_>,
 ) -> Result<(bool, Option<BoundariesDiagnostic>), Error> {
     // Safety guard — relative imports are resolved as file imports elsewhere.
     if import.starts_with('.') {
@@ -123,12 +165,38 @@ fn check_import_as_tsconfig_path_alias(
             let diag = check_file_import(
                 file_path,
                 package_root,
-                package_name,
+                dependency_locations.package,
                 import,
                 resolved_import_path,
                 span,
                 file_content,
             )?;
+            // An alias that leaves the current package but lands inside another
+            // workspace package is an import of that package, not a path that
+            // escapes the workspace. Specifiers that walk up with `..` are
+            // still reaching into another package by path, so they keep the
+            // `ImportLeavesPackage` diagnostic.
+            let diag = match diag {
+                Some(BoundariesDiagnostic::ImportLeavesPackage { .. })
+                    if !import.split('/').any(|segment| segment == "..") =>
+                {
+                    match dependency_locations
+                        .workspace_packages
+                        .package_containing(resolved_import_path)
+                    {
+                        Some(target_package) => check_aliased_workspace_import(
+                            import,
+                            target_package,
+                            span,
+                            file_path,
+                            file_content,
+                            dependency_locations,
+                        ),
+                        None => diag,
+                    }
+                }
+                diag => diag,
+            };
             Ok((true, diag))
         }
         // Expected resolution failures — the import isn't a tsconfig alias.
@@ -233,12 +301,12 @@ pub(crate) fn check_import(
         // `@/foo`) that can only be tsconfig aliases.
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             resolver,
-            package_name,
             package_root,
             span,
             file_path,
             file_content,
             import,
+            dependency_locations,
         )?;
         if resolved {
             diagnostics.extend(diag);
@@ -262,6 +330,34 @@ pub(crate) fn check_import(
     diagnostics.extend(check_result);
 
     Ok(())
+}
+
+/// Validates an import that a tsconfig path alias resolved into
+/// `target_package`'s directory. The import is allowed if `target_package` is
+/// a declared dependency of the importing package; otherwise it is reported as
+/// an undeclared package import.
+fn check_aliased_workspace_import(
+    import: &str,
+    target_package: &PackageName,
+    span: SourceSpan,
+    file_path: &AbsoluteSystemPath,
+    file_content: &Arc<str>,
+    dependency_locations: DependencyLocations<'_>,
+) -> Option<BoundariesDiagnostic> {
+    let target_node = PackageNode::Workspace(target_package.clone());
+    if dependency_locations.is_dependency(&target_node) {
+        return None;
+    }
+
+    Some(BoundariesDiagnostic::PackageNotFound {
+        path: file_path.to_owned(),
+        name: target_package.to_string(),
+        help: Some(format!(
+            "`{import}` is a tsconfig path alias that resolves into package `{target_package}`"
+        )),
+        span,
+        text: NamedSource::new(file_path.as_str(), file_content.clone()),
+    })
 }
 
 /// Checks whether a resolved file import stays within the package boundary.
@@ -411,6 +507,7 @@ pub(crate) fn check_package_import(
         return Some(BoundariesDiagnostic::PackageNotFound {
             path: file_path.to_owned(),
             name: package_node.to_string(),
+            help: None,
             span,
             text: NamedSource::new(file_path.as_str(), file_content.clone()),
         });
@@ -421,7 +518,7 @@ pub(crate) fn check_package_import(
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, sync::LazyLock};
 
     use test_case::test_case;
     use turbo_trace::Tracer;
@@ -431,6 +528,26 @@ mod test {
 
     use super::*;
     use crate::BoundariesResult;
+
+    static NO_INTERNAL_DEPENDENCIES: LazyLock<HashSet<&'static PackageNode>> =
+        LazyLock::new(HashSet::new);
+    static NO_IMPLICIT_DEPENDENCIES: LazyLock<HashMap<String, Spanned<()>>> =
+        LazyLock::new(HashMap::new);
+    static NO_WORKSPACE_PACKAGES: LazyLock<WorkspacePackageDirectories> =
+        LazyLock::new(WorkspacePackageDirectories::default);
+
+    /// Dependency locations for a package that declares no dependencies and
+    /// lives in a workspace with no other known packages.
+    fn no_dependencies(package: &PackageName) -> DependencyLocations<'_> {
+        DependencyLocations {
+            package,
+            internal_dependencies: &NO_INTERNAL_DEPENDENCIES,
+            external_declarations: PackageExternalDeclarations::new(&[], package.as_str()),
+            implicit_dependencies: &NO_IMPLICIT_DEPENDENCIES,
+            global_implicit_dependencies: &NO_IMPLICIT_DEPENDENCIES,
+            workspace_packages: &NO_WORKSPACE_PACKAGES,
+        }
+    }
 
     fn declarations(package_json: &PackageJson) -> Vec<ExternalDeclaration> {
         package_json
@@ -473,6 +590,7 @@ mod test {
             external_declarations: PackageExternalDeclarations::new(&declarations, "my-app"),
             implicit_dependencies: &HashMap::new(),
             global_implicit_dependencies: &HashMap::new(),
+            workspace_packages: &WorkspacePackageDirectories::default(),
         };
 
         for dependency in ["alias", "target", "optional", "peer"] {
@@ -551,12 +669,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             import,
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -580,12 +698,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             import,
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -626,6 +744,7 @@ mod test {
             external_declarations: PackageExternalDeclarations::new(&declarations, "my-app"),
             implicit_dependencies: &implicit_deps,
             global_implicit_dependencies: &global_implicit_deps,
+            workspace_packages: &WorkspacePackageDirectories::default(),
         };
 
         let span = SourceSpan::new(0.into(), file_content.len());
@@ -674,6 +793,7 @@ mod test {
             external_declarations: PackageExternalDeclarations::new(&declarations, "my-app"),
             implicit_dependencies: &implicit_deps,
             global_implicit_dependencies: &global_implicit_deps,
+            workspace_packages: &WorkspacePackageDirectories::default(),
         };
 
         let span = SourceSpan::new(0.into(), file_content.len());
@@ -723,6 +843,7 @@ mod test {
             external_declarations: PackageExternalDeclarations::new(&declarations, "my-app"),
             implicit_dependencies: &implicit_deps,
             global_implicit_dependencies: &global_implicit_deps,
+            workspace_packages: &WorkspacePackageDirectories::default(),
         };
 
         let span = SourceSpan::new(0.into(), file_content.len());
@@ -777,12 +898,12 @@ mod test {
 
         let (resolved, _diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             "@/utils/helper",
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -838,12 +959,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             "features/feature-a",
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -901,12 +1022,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             "@/utils/helper",
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -965,12 +1086,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             "some-pkg",
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -1018,12 +1139,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             "@shared/utils",
+            no_dependencies(&package_name),
         )
         .unwrap();
 
@@ -1034,6 +1155,238 @@ mod test {
         assert!(
             diag.is_some(),
             "expected an ImportLeavesPackage diagnostic for an out-of-package alias"
+        );
+    }
+
+    /// A workspace with two packages, `web` (`packages/web`) and `@repo/ui`
+    /// (`packages/ui`), plus a `shared` directory that belongs to no package.
+    /// `web`'s tsconfig aliases into both.
+    struct AliasWorkspace {
+        _tmp: tempfile::TempDir,
+        web_root: AbsoluteSystemPathBuf,
+        file_path: AbsoluteSystemPathBuf,
+        file_content: Arc<str>,
+        resolver: Resolver,
+        workspace_packages: WorkspacePackageDirectories,
+    }
+
+    impl AliasWorkspace {
+        fn new(import: &str) -> Self {
+            let tmp = tempfile::tempdir().expect("create temp workspace");
+            // Canonicalize to match the resolver's symlink-resolved paths.
+            let root = dunce::canonicalize(tmp.path()).expect("canonicalize temp workspace");
+            let root = AbsoluteSystemPathBuf::try_from(root).expect("absolute utf-8 root");
+
+            let ui_root = root.join_components(&["packages", "ui"]);
+            ui_root
+                .join_component("src")
+                .create_dir_all()
+                .expect("create ui src");
+            ui_root
+                .join_component("package.json")
+                .create_with_contents(r#"{ "name": "@repo/ui" }"#)
+                .expect("write ui package.json");
+            ui_root
+                .join_components(&["src", "button.ts"])
+                .create_with_contents("export const Button = 1;")
+                .expect("write ui source");
+
+            let shared = root.join_component("shared");
+            shared.create_dir_all().expect("create shared dir");
+            shared
+                .join_component("utils.ts")
+                .create_with_contents("export const x = 1;")
+                .expect("write shared source");
+
+            let web_root = root.join_components(&["packages", "web"]);
+            web_root.create_dir_all().expect("create web dir");
+            web_root
+                .join_component("package.json")
+                .create_with_contents(r#"{ "name": "web" }"#)
+                .expect("write web package.json");
+            let tsconfig = web_root.join_component("tsconfig.json");
+            tsconfig
+                .create_with_contents(
+                    r#"{ "compilerOptions": { "paths": {
+                        "@/*": ["./*"],
+                        "@ui/*": ["../ui/src/*"],
+                        "@repo/ui/*": ["../ui/src/*"],
+                        "@shared/*": ["../../shared/*"]
+                    } } }"#,
+                )
+                .expect("write web tsconfig");
+
+            let file_content: Arc<str> = format!(r#"import {{ x }} from "{import}";"#).into();
+            let file_path = web_root.join_component("index.ts");
+            file_path
+                .create_with_contents(file_content.as_bytes())
+                .expect("write web source");
+
+            let workspace_packages = WorkspacePackageDirectories::new([
+                (web_root.clone(), PackageName::from("web")),
+                (ui_root, PackageName::from("@repo/ui")),
+            ]);
+
+            Self {
+                _tmp: tmp,
+                resolver: Tracer::create_resolver(Some(&tsconfig)),
+                web_root,
+                file_path,
+                file_content,
+                workspace_packages,
+            }
+        }
+
+        fn check(
+            &self,
+            import: &str,
+            internal_dependencies: &HashSet<&PackageNode>,
+        ) -> (bool, Option<BoundariesDiagnostic>) {
+            let package_name = PackageName::from("web");
+            let dependency_locations = DependencyLocations {
+                internal_dependencies,
+                workspace_packages: &self.workspace_packages,
+                ..no_dependencies(&package_name)
+            };
+            check_import_as_tsconfig_path_alias(
+                &self.resolver,
+                &self.web_root,
+                SourceSpan::new(0.into(), 0),
+                &self.file_path,
+                &self.file_content,
+                import,
+                dependency_locations,
+            )
+            .expect("check tsconfig path alias")
+        }
+    }
+
+    /// An alias that resolves into a declared workspace dependency is an
+    /// import of that package and is allowed.
+    #[test]
+    fn tsconfig_alias_into_declared_workspace_package_is_allowed() {
+        let workspace = AliasWorkspace::new("@ui/button");
+        let ui = PackageNode::Workspace(PackageName::from("@repo/ui"));
+        let internal_dependencies = HashSet::from([&ui]);
+
+        let (resolved, diag) = workspace.check("@ui/button", &internal_dependencies);
+
+        assert!(
+            resolved,
+            "@ui/button should resolve through the tsconfig alias"
+        );
+        assert!(
+            diag.is_none(),
+            "alias into a declared dependency should not be flagged, got {diag:?}"
+        );
+    }
+
+    /// An alias that resolves into a workspace package that isn't a dependency
+    /// is reported as an undeclared import of that package, not as leaving
+    /// the package.
+    #[test]
+    fn tsconfig_alias_into_undeclared_workspace_package_names_the_package() {
+        let workspace = AliasWorkspace::new("@ui/button");
+
+        let (resolved, diag) = workspace.check("@ui/button", &HashSet::new());
+
+        assert!(
+            resolved,
+            "@ui/button should resolve through the tsconfig alias"
+        );
+        let Some(BoundariesDiagnostic::PackageNotFound { name, help, .. }) = diag else {
+            panic!("expected PackageNotFound, got {diag:?}");
+        };
+        assert_eq!(name, "@repo/ui");
+        assert_eq!(
+            help.as_deref(),
+            Some("`@ui/button` is a tsconfig path alias that resolves into package `@repo/ui`")
+        );
+    }
+
+    /// An alias that resolves outside of every workspace package still leaves
+    /// the package.
+    #[test]
+    fn tsconfig_alias_outside_all_workspace_packages_leaves_the_package() {
+        let workspace = AliasWorkspace::new("@shared/utils");
+
+        let (resolved, diag) = workspace.check("@shared/utils", &HashSet::new());
+
+        assert!(
+            resolved,
+            "@shared/utils should resolve through the tsconfig alias"
+        );
+        assert!(
+            matches!(diag, Some(BoundariesDiagnostic::ImportLeavesPackage { .. })),
+            "expected ImportLeavesPackage, got {diag:?}"
+        );
+    }
+
+    /// A specifier that walks up out of the package with `..` is reaching into
+    /// another package by path, even if it starts with an alias prefix.
+    #[test]
+    fn tsconfig_alias_with_parent_segments_into_workspace_package_leaves_the_package() {
+        let import = "@/../ui/src/button";
+        let workspace = AliasWorkspace::new(import);
+        let ui = PackageNode::Workspace(PackageName::from("@repo/ui"));
+        let internal_dependencies = HashSet::from([&ui]);
+
+        let (resolved, diag) = workspace.check(import, &internal_dependencies);
+
+        assert!(
+            resolved,
+            "{import} should resolve through the tsconfig alias"
+        );
+        assert!(
+            matches!(diag, Some(BoundariesDiagnostic::ImportLeavesPackage { .. })),
+            "expected ImportLeavesPackage, got {diag:?}"
+        );
+    }
+
+    /// An alias that mirrors the target package's own name is left to
+    /// `check_package_import`, which validates it as a package import.
+    #[test]
+    fn tsconfig_alias_matching_target_package_name_falls_through() {
+        let workspace = AliasWorkspace::new("@repo/ui/button");
+
+        let (resolved, diag) = workspace.check("@repo/ui/button", &HashSet::new());
+
+        assert!(!resolved, "package-named alias should fall through");
+        assert!(diag.is_none());
+    }
+
+    #[test]
+    fn workspace_package_lookup_prefers_deepest_package() {
+        let tmp = tempfile::tempdir().expect("create temp workspace");
+        let root = AbsoluteSystemPath::new(tmp.path().to_str().expect("utf-8 temp path"))
+            .expect("absolute temp path");
+        let outer = root.join_components(&["packages", "outer"]);
+        let inner = outer.join_components(&["nested", "inner"]);
+        let lookup = WorkspacePackageDirectories::new([
+            (outer.clone(), PackageName::from("outer")),
+            (inner.clone(), PackageName::from("inner")),
+        ]);
+
+        assert_eq!(
+            lookup.package_containing(&inner.join_components(&["src", "a.ts"])),
+            Some(&PackageName::from("inner"))
+        );
+        assert_eq!(
+            lookup.package_containing(&outer.join_components(&["src", "a.ts"])),
+            Some(&PackageName::from("outer"))
+        );
+        assert_eq!(
+            lookup.package_containing(&inner),
+            Some(&PackageName::from("inner"))
+        );
+        assert_eq!(
+            lookup.package_containing(&root.join_components(&["shared", "a.ts"])),
+            None
+        );
+        // A sibling whose name shares a prefix with a package is not inside it.
+        assert_eq!(
+            lookup.package_containing(&root.join_components(&["packages", "outer-two", "a.ts"])),
+            None
         );
     }
 
@@ -1076,12 +1429,12 @@ mod test {
 
         let (resolved, diag) = check_import_as_tsconfig_path_alias(
             &resolver,
-            &package_name,
             package_root,
             span,
             &file_path,
             &file_content,
             import,
+            no_dependencies(&package_name),
         )
         .expect("check tsconfig path alias");
 
@@ -1185,6 +1538,7 @@ mod test {
             external_declarations: PackageExternalDeclarations::new(&declarations, "my-app"),
             implicit_dependencies: &implicit_deps,
             global_implicit_dependencies: &global_implicit_deps,
+            workspace_packages: &WorkspacePackageDirectories::default(),
         };
 
         let mut sources = Vec::new();
