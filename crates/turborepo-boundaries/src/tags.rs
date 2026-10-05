@@ -869,7 +869,7 @@ mod tests {
             }
         }
 
-        fn find_cycles(&self) -> Vec<Vec<PackageName>> {
+        fn find_cycles(&self) -> Vec<turborepo_repository::package_graph::PackageCycle> {
             Vec::new()
         }
     }

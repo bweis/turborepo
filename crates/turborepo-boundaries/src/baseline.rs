@@ -18,25 +18,31 @@
 //! with unix separators), the rule id (see
 //! [`BoundariesDiagnostic::rule_id`]) and the rule's subject: the import
 //! specifier for import rules, the related package (and tag) for tag rules,
-//! and the cycle path for circular dependencies.
+//! and, for circular dependencies, the sorted list of every package in the
+//! cycle's strongly connected component. Cycles are keyed by membership rather
+//! than by the reported cycle path because the path is a single representative
+//! loop: a package joining an existing cycle may not change it, but always
+//! changes the membership.
 //!
-//! The file is deterministic, pretty-printed JSON grouped by package:
+//! The file is deterministic, pretty-printed JSON grouped by package. Within a
+//! package, entries are sorted by file (entries without a file first), then
+//! rule and subject:
 //!
 //! ```json
 //! {
 //!   "version": 1,
 //!   "violations": {
 //!     "//": [
-//!       { "rule": "circular-dependency", "cycle": "a -> b -> a", "count": 1 }
+//!       { "rule": "circular-dependency", "cycle": ["a", "b"], "count": 1 }
 //!     ],
 //!     "web": [
+//!       { "rule": "denied-tag", "package": "internal-ui", "tag": "internal", "count": 1 },
 //!       {
 //!         "file": "apps/web/index.ts",
 //!         "rule": "package-not-found",
 //!         "import": "lodash",
 //!         "count": 2
-//!       },
-//!       { "rule": "denied-tag", "package": "internal-ui", "tag": "internal", "count": 1 }
+//!       }
 //!     ]
 //!   }
 //! }
@@ -87,8 +93,9 @@ pub struct ViolationKey {
     pub package: Option<String>,
     /// The offending tag, for `denied-tag`.
     pub tag: Option<String>,
-    /// The cycle path, for `circular-dependency`.
-    pub cycle: Option<String>,
+    /// Every package in the cycle's strongly connected component, sorted,
+    /// for `circular-dependency`.
+    pub cycle: Option<Vec<String>>,
 }
 
 impl ViolationKey {
@@ -171,10 +178,10 @@ impl ViolationKey {
                     ..Self::new(rule)
                 },
             )),
-            BoundariesDiagnostic::CircularDependency { cycle_path } => Some((
+            BoundariesDiagnostic::CircularDependency { members, .. } => Some((
                 ROOT_PKG_NAME.to_string(),
                 Self {
-                    cycle: Some(cycle_path.clone()),
+                    cycle: Some(members.clone()),
                     ..Self::new(rule)
                 },
             )),
@@ -210,7 +217,12 @@ impl fmt::Display for ViolationKey {
             write!(f, " with tag `{tag}`")?;
         }
         if let Some(cycle) = &self.cycle {
-            write!(f, " for cycle `{cycle}`")?;
+            let members = cycle
+                .iter()
+                .map(|member| format!("`{member}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            write!(f, " for the cycle between {members}")?;
         }
         Ok(())
     }
@@ -312,7 +324,7 @@ struct BaselineFileEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cycle: Option<String>,
+    cycle: Option<Vec<String>>,
     count: usize,
 }
 
@@ -329,15 +341,29 @@ impl Baseline {
             .and_then(|config| config.baseline.as_ref())
             .map(|baseline| baseline.as_inner().as_str())
             .unwrap_or(DEFAULT_BASELINE_PATH);
-        let relative =
-            RelativeUnixPathBuf::new(configured).map_err(|_| Error::InvalidBaselinePath {
-                path: configured.to_string(),
-            })?;
+        let invalid = |reason: &str| Error::InvalidBaselinePath {
+            path: configured.to_string(),
+            reason: reason.to_string(),
+        };
+        if configured.trim().is_empty() {
+            return Err(invalid("the path is empty"));
+        }
+        if configured.ends_with('/') || configured.ends_with('\\') {
+            return Err(invalid("the path must point to a file"));
+        }
+        // The baseline is written by `--update-baseline`, so it must stay
+        // inside the repository.
+        if configured.split(['/', '\\']).any(|segment| segment == "..") {
+            return Err(invalid("the path may not contain `..`"));
+        }
+        let relative = RelativeUnixPathBuf::new(configured)
+            .map_err(|_| invalid("the path must be relative to the repository root"))?;
         Ok((repo_root.join_unix_path(&relative), configured.to_string()))
     }
 
     /// Reads the baseline at `path`, returning `None` if it does not exist.
-    pub fn load(path: &AbsoluteSystemPath) -> Result<Option<Self>, Error> {
+    /// `display_path` is used in error messages.
+    pub fn load(path: &AbsoluteSystemPath, display_path: &str) -> Result<Option<Self>, Error> {
         let Some(contents) = path
             .read_existing_to_string()
             .map_err(|_| Error::FileNotFound(path.to_owned()))?
@@ -347,7 +373,7 @@ impl Baseline {
         Self::from_json(&contents)
             .map(Some)
             .map_err(|reason| Error::InvalidBaseline {
-                path: path.to_string(),
+                path: display_path.to_string(),
                 reason,
             })
     }
@@ -614,9 +640,19 @@ mod tests {
         }
     }
 
+    /// A cycle whose strongly connected component is exactly the packages on
+    /// `path`.
     fn cycle(path: &str) -> BoundariesDiagnostic {
+        let mut members: Vec<&str> = path.split(" -> ").collect();
+        members.sort();
+        members.dedup();
+        cycle_with_members(path, &members)
+    }
+
+    fn cycle_with_members(path: &str, members: &[&str]) -> BoundariesDiagnostic {
         BoundariesDiagnostic::CircularDependency {
             cycle_path: path.to_string(),
+            members: members.iter().map(|member| member.to_string()).collect(),
         }
     }
 
@@ -880,6 +916,42 @@ mod tests {
     }
 
     #[test]
+    fn cycles_are_keyed_by_membership() {
+        let root = repo_root();
+        let baseline = Baseline::from_diagnostics(&root, &[cycle("a -> b -> a")]);
+
+        // `c` joins the cycle (a -> c -> a) but the representative path that
+        // is reported doesn't change. The cycle must not be suppressed.
+        let mut result = result_with(vec![cycle_with_members("a -> b -> a", &["a", "b", "c"])]);
+        baseline.apply(
+            &root,
+            DEFAULT_BASELINE_PATH,
+            &BaselineScope::all(),
+            &mut result,
+        );
+        assert_eq!(result.suppressed_by_baseline, 0);
+        assert_eq!(
+            result
+                .diagnostics
+                .iter()
+                .map(|d| d.rule_id())
+                .collect::<Vec<_>>(),
+            ["circular-dependency", "stale-baseline-entry"]
+        );
+
+        // The same members traced along a different path are the same cycle.
+        let mut result = result_with(vec![cycle_with_members("b -> a -> b", &["a", "b"])]);
+        baseline.apply(
+            &root,
+            DEFAULT_BASELINE_PATH,
+            &BaselineScope::all(),
+            &mut result,
+        );
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.suppressed_by_baseline, 1);
+    }
+
+    #[test]
     fn serialization_is_deterministic_and_round_trips() {
         let root = repo_root();
         let diagnostics = vec![
@@ -903,7 +975,10 @@ mod tests {
     "//": [
       {
         "rule": "circular-dependency",
-        "cycle": "a -> b -> a",
+        "cycle": [
+          "a",
+          "b"
+        ],
         "count": 1
       }
     ],
@@ -994,14 +1069,36 @@ mod tests {
         assert_eq!(display, "config/boundaries.json");
         assert_eq!(path, file(&root, "config/boundaries.json"));
 
+        for invalid in [
+            "/abs.json",
+            "",
+            "  ",
+            "../outside.json",
+            "config/../../outside.json",
+            "config/..",
+            "config/",
+        ] {
+            let config = BoundariesConfig {
+                baseline: Some(turborepo_errors::Spanned::new(invalid.to_string())),
+                ..Default::default()
+            };
+            assert!(
+                matches!(
+                    Baseline::path(&root, Some(&config)),
+                    Err(Error::InvalidBaselinePath { .. })
+                ),
+                "{invalid:?} should be rejected"
+            );
+        }
+
+        // `..` is only rejected as a whole segment.
         let config = BoundariesConfig {
-            baseline: Some(turborepo_errors::Spanned::new("/abs.json".to_string())),
+            baseline: Some(turborepo_errors::Spanned::new(
+                "config/..baseline.json".to_string(),
+            )),
             ..Default::default()
         };
-        assert!(matches!(
-            Baseline::path(&root, Some(&config)),
-            Err(Error::InvalidBaselinePath { .. })
-        ));
+        assert!(Baseline::path(&root, Some(&config)).is_ok());
     }
 
     #[test]
@@ -1009,16 +1106,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
         let path = file(root, "nested/dir/baseline.json");
-        assert_eq!(Baseline::load(&path).unwrap(), None);
+        assert_eq!(
+            Baseline::load(&path, "nested/dir/baseline.json").unwrap(),
+            None
+        );
 
         let baseline = Baseline::from_diagnostics(root, &[cycle("a -> b -> a")]);
         baseline.write(&path).unwrap();
-        assert_eq!(Baseline::load(&path).unwrap(), Some(baseline));
+        assert_eq!(
+            Baseline::load(&path, "nested/dir/baseline.json").unwrap(),
+            Some(baseline)
+        );
 
         path.create_with_contents("{").unwrap();
-        assert!(matches!(
-            Baseline::load(&path),
-            Err(Error::InvalidBaseline { .. })
-        ));
+        let err = Baseline::load(&path, "nested/dir/baseline.json").unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidBaseline { path, .. } if path == "nested/dir/baseline.json"),
+            "{err:?}"
+        );
     }
 }

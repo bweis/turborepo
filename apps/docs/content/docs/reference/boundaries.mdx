@@ -272,7 +272,7 @@ Entries are grouped by package and don't contain line numbers, so unrelated edit
     "//": [
       {
         "rule": "circular-dependency",
-        "cycle": "@repo/a -> @repo/b -> @repo/a",
+        "cycle": ["@repo/a", "@repo/b"],
         "count": 1
       }
     ],
@@ -294,7 +294,9 @@ Entries are grouped by package and don't contain line numbers, so unrelated edit
 }
 ```
 
-Each entry identifies a violation by its package, its file (relative to the repository root), its rule, and its subject (the import, the related package and tag, or the cycle). `count` is the number of times that violation occurs, so adding one more identical violation to the same file fails the check. Circular dependencies are recorded under the root package, `//`.
+Each entry identifies a violation by its package, its file (relative to the repository root), its rule, and its subject (the import, the related package and tag, or the packages in the cycle). Within a package, entries without a file come first, followed by entries sorted by file. `count` is the number of times that violation occurs, so adding one more identical violation to the same file fails the check.
+
+Circular dependencies are recorded under the root package, `//`, and identified by every package that is part of the cycle. If another package joins an existing cycle, the cycle is reported as a new violation.
 
 | Rule                    | Violation                                                               |
 | ----------------------- | ----------------------------------------------------------------------- |
@@ -310,6 +312,10 @@ Some problems can't be added to the baseline because they mean that code is not 
 ### Filtering
 
 When you use `--filter`, only the selected packages are checked. Baseline entries for other packages are left alone: they're not reported as stale, and `turbo boundaries --update-baseline --filter=<package>` only replaces the entries for the selected packages. Circular dependencies are always checked, as are entries for packages that no longer exist.
+
+### `turbo query`
+
+The baseline only applies to `turbo boundaries`. The `boundaries` field of [`turbo query`](/docs/reference/query) always reports every violation, including those recorded in the baseline, so tools built on it see the raw state of the repository.
 
 ### Configuring the baseline location
 
