@@ -683,7 +683,23 @@ impl BoundariesChecker {
                 }
                 let validated: ValidatedGlob = glob
                     .parse()
-                    .map_err(|e: globwalk::GlobError| invalid(e.to_string()))?;
+                    .map_err(|e: globwalk::GlobError| invalid(e.reason().to_string()))?;
+                // Globs are relative to the package directory. Once cleaned,
+                // anything that resolves to the package root or above it would
+                // exclude every file in the package.
+                match validated.as_str() {
+                    "" | "." => {
+                        return Err(invalid(
+                            "glob matches the entire package directory".to_string(),
+                        ));
+                    }
+                    path if path == ".." || path.starts_with("../") => {
+                        return Err(invalid(
+                            "glob must not point outside the package directory".to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
                 // Compile the glob up front so syntax errors are reported against
                 // the config entry instead of surfacing from the file walk.
                 wax::Glob::new(&globwalk::fix_glob_pattern(validated.as_str()))
@@ -693,7 +709,6 @@ impl BoundariesChecker {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn check_package<G, T>(
         ctx: &BoundariesContext<'_, G, T>,
         package_name: &PackageName,
@@ -1402,6 +1417,39 @@ mod tests {
         files
     }
 
+    #[test_case("./src/routeTree.gen.ts", &["packages/app/src/generated/client.ts"] ; "leading dot slash")]
+    #[test_case("src/generated", &["packages/app/src/routeTree.gen.ts"] ; "bare directory")]
+    #[test_case("src/generated/", &["packages/app/src/routeTree.gen.ts"] ; "directory with trailing slash")]
+    #[test_case("./src/generated", &["packages/app/src/routeTree.gen.ts"] ; "bare directory with leading dot slash")]
+    fn check_boundaries_normalizes_ignore_globs(glob: &str, expected: &[&str]) {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let package_name = PackageName::Other("app".into());
+        create_package_with_violations(
+            repo_root,
+            "app",
+            &["src/routeTree.gen.ts", "src/generated/client.ts"],
+        );
+
+        let graph = MockGraph::new(vec![package_name.clone()]);
+        let filtered = HashSet::from([package_name]);
+        let root_config = ignore_config(&[glob]);
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &MockTurboJson,
+                root_boundaries_config: Some(&root_config),
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(diagnostic_files(repo_root, &result), expected);
+        assert_eq!(result.files_checked, 2);
+    }
+
     #[test]
     fn check_boundaries_skips_files_matching_root_ignore_globs() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1479,6 +1527,12 @@ mod tests {
 
     #[test_case("src/[" ; "unclosed character class")]
     #[test_case("!**/*.gen.ts" ; "negation")]
+    #[test_case("" ; "empty")]
+    #[test_case("." ; "package directory")]
+    #[test_case("src/.." ; "package directory after cleaning")]
+    #[test_case(".." ; "parent directory")]
+    #[test_case("../**" ; "parent directory glob")]
+    #[test_case("./../other/**" ; "parent directory after cleaning")]
     fn check_boundaries_rejects_invalid_ignore_globs(glob: &str) {
         let tmp = tempfile::tempdir().unwrap();
         let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
