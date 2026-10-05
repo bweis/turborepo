@@ -827,6 +827,15 @@ export interface RootBoundariesConfig extends BoundariesConfig {
    * can import a tag and which packages a tag can import
    */
   tags?: BoundariesRulesMap;
+  /**
+   * Whether to check each package's source file imports. When `false`, imports
+   * are not checked for leaving the package, for referencing undeclared
+   * dependencies, or for missing `type` qualifiers on type declaration package
+   * imports. Tag rules and circular dependency detection still run.
+   *
+   * @defaultValue `true`
+   */
+  importChecks?: boolean;
 }
 
 export const isRootSchemaV2 = (schema: Schema): schema is RootSchema =>

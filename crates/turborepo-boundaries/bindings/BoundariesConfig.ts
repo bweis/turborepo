@@ -32,4 +32,15 @@ dependencies?: Permissions,
  *
  * Restricts which packages can import this package.
  */
-dependents?: Permissions, };
+dependents?: Permissions, 
+/**
+ * Whether to check each package's source file imports.
+ *
+ * When `false`, imports are not checked for leaving the package, for
+ * referencing undeclared dependencies, or for missing `type` qualifiers on
+ * type declaration package imports. Tag rules and circular dependency
+ * detection still run. Only allowed in the root `turbo.json`.
+ *
+ * Defaults to `true`.
+ */
+importChecks?: boolean, };
