@@ -1297,7 +1297,7 @@ Assigns [Boundaries](/docs/reference/boundaries) tags to packages by directory, 
 }
 ```
 
-Each key is a glob matched against package directories relative to the repository root. A package receives the tags of every glob that matches its directory, in addition to the `tags` in its own `turbo.json`. These tags are only used by `turbo boundaries`.
+Each key is a glob matched against package directories relative to the repository root. A package receives the tags of every glob that matches its directory, in addition to the `tags` in its own `turbo.json`. The root package is never matched. These tags are only used by `turbo boundaries`; they don't affect task tag selectors or `turbo query`.
 
 `turbo boundaries` reports an error for invalid globs and a warning for globs that don't match any package.
 
