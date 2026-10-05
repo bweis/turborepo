@@ -1,0 +1,51 @@
+---
+source: crates/turborepo/tests/boundaries_adoption.rs
+expression: "fs::read_to_string(dir.join(BASELINE))?"
+---
+{
+  "version": 1,
+  "violations": {
+    "@repo/api": [
+      {
+        "file": "apps/api/src/index.ts",
+        "rule": "package-not-found",
+        "import": "zod",
+        "count": 1
+      }
+    ],
+    "@repo/ui": [
+      {
+        "rule": "denied-package",
+        "import": "@aws-sdk/client-s3",
+        "package": "@repo/storage",
+        "count": 1
+      },
+      {
+        "rule": "denied-tag",
+        "package": "@repo/storage",
+        "tag": "node",
+        "count": 1
+      }
+    ],
+    "@repo/web": [
+      {
+        "rule": "denied-package",
+        "import": "@aws-sdk/client-s3",
+        "package": "@repo/storage",
+        "count": 1
+      },
+      {
+        "rule": "denied-tag",
+        "package": "@repo/storage",
+        "tag": "node",
+        "count": 1
+      },
+      {
+        "file": "apps/web/src/main.tsx",
+        "rule": "package-not-found",
+        "import": "@repo/utils",
+        "count": 1
+      }
+    ]
+  }
+}

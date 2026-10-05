@@ -1,0 +1,27 @@
+{
+  "$schema": "https://turborepo.dev/schema.v2.json",
+  "boundaries": {
+    "ignore": ["**/routeTree.gen.ts"],
+    "packageTags": {
+      "apps/*": ["app"],
+      "apps/web": ["browser"],
+      "apps/api": ["node"],
+      "packages/*": ["library"],
+      "packages/ui": ["browser"],
+      "packages/db": ["node"]
+    },
+    "tags": {
+      "browser": {
+        "dependencies": {
+          "deny": ["node"],
+          "denyPackages": ["pg", "@aws-sdk/*"]
+        }
+      },
+      "library": {
+        "dependencies": {
+          "allow": ["library"]
+        }
+      }
+    }
+  }
+}
