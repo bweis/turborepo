@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use miette::NamedSource;
@@ -103,6 +103,22 @@ impl ProcessedPermissions {
 /// Precompiled `denyPackages` patterns.
 pub struct DeniedPackages {
     patterns: Vec<DeniedPackagePattern>,
+    /// Denied declarations per declaring package. Matches depend only on the
+    /// patterns and the declaring package, and root tag rules are shared by
+    /// every package checked (in parallel), so each workspace package's
+    /// declarations are matched at most once per rule.
+    matches: Mutex<HashMap<PackageName, Arc<[DeniedDeclaration]>>>,
+}
+
+/// An external declaration matched by a `denyPackages` pattern.
+struct DeniedDeclaration {
+    /// The name the dependency is declared under in package.json.
+    dependency: String,
+    /// The real package, for npm aliases.
+    aliased_package: Option<String>,
+    dependency_kind: &'static str,
+    /// Index into `DeniedPackages::patterns`.
+    pattern: usize,
 }
 
 struct DeniedPackagePattern {
@@ -167,18 +183,57 @@ impl DeniedPackages {
                 }
             })
             .collect();
-        Self { patterns }
+        Self {
+            patterns,
+            matches: Mutex::default(),
+        }
+    }
+
+    /// Returns the declarations of `package` denied by these patterns.
+    fn denied_declarations<G: PackageGraphProvider>(
+        &self,
+        graph: &G,
+        package: &PackageName,
+    ) -> Arc<[DeniedDeclaration]> {
+        if let Some(matches) = self
+            .matches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(package)
+        {
+            return matches.clone();
+        }
+
+        // Match outside the lock. Racing threads compute the same result, and
+        // the first insert wins.
+        let matches: Arc<[DeniedDeclaration]> = graph
+            .external_declarations(package)
+            .iter()
+            .filter_map(|declaration| {
+                let dependency = declaration.declaration_name();
+                let aliased_package = aliased_package(declaration);
+                let pattern = self.find_match(dependency, aliased_package)?;
+                Some(DeniedDeclaration {
+                    dependency: dependency.to_string(),
+                    aliased_package: aliased_package.map(str::to_string),
+                    dependency_kind: dependency_kind_field(declaration.kind()),
+                    pattern,
+                })
+            })
+            .collect();
+        self.matches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(package.clone())
+            .or_insert(matches)
+            .clone()
     }
 
     /// Returns the first pattern that matches the declaration, either by the
     /// name it is declared under in `package.json` or, for npm aliases (e.g.
     /// `"db": "npm:pg@^8"`), by the real package name.
-    fn find_match(
-        &self,
-        declaration_name: &str,
-        aliased_package: Option<&str>,
-    ) -> Option<&DeniedPackagePattern> {
-        self.patterns.iter().find(|pattern| {
+    fn find_match(&self, declaration_name: &str, aliased_package: Option<&str>) -> Option<usize> {
+        self.patterns.iter().position(|pattern| {
             pattern.matches(declaration_name)
                 || aliased_package.is_some_and(|aliased| pattern.matches(aliased))
         })
@@ -219,6 +274,11 @@ fn dependency_kind_field(kind: DependencyKind) -> &'static str {
 
 /// Checks the external dependencies declared by `pkg` and by each of its
 /// transitive workspace dependencies against `denyPackages`.
+///
+/// `dependencies` must be sorted by name so output is deterministic.
+/// `reported` holds the `(declaring package, dependency)` pairs already
+/// reported for `pkg`, so a dependency denied by several rules is reported
+/// once.
 fn check_denied_packages<G, T>(
     ctx: &BoundariesContext<'_, G, T>,
     diagnostics: &mut Vec<BoundariesDiagnostic>,
@@ -226,6 +286,7 @@ fn check_denied_packages<G, T>(
     pkg: &PackageNode,
     package_name_source: Option<&Spanned<()>>,
     dependencies: &[&PackageNode],
+    reported: &mut HashSet<(PackageName, String)>,
 ) where
     G: PackageGraphProvider,
     T: TurboJsonProvider,
@@ -234,33 +295,30 @@ fn check_denied_packages<G, T>(
         return;
     }
     let source_package_name = pkg.as_package_name();
-
-    // Check the package itself first, then its workspace dependencies in a
-    // stable order so output is deterministic.
-    let mut workspace_dependencies: Vec<&PackageName> = dependencies
+    let workspace_dependencies = dependencies
         .iter()
         .filter_map(|dependency| match dependency {
             PackageNode::Workspace(name) => Some(name),
             PackageNode::Root => None,
-        })
-        .collect();
-    workspace_dependencies.sort();
+        });
 
     for declared_by in std::iter::once(source_package_name).chain(workspace_dependencies) {
-        for declaration in ctx.pkg_dep_graph.external_declarations(declared_by).iter() {
-            let declaration_name = declaration.declaration_name();
-            let aliased_package = aliased_package(declaration);
-            let Some(pattern) = denied_packages.find_match(declaration_name, aliased_package)
-            else {
+        for denied in denied_packages
+            .denied_declarations(ctx.pkg_dep_graph, declared_by)
+            .iter()
+        {
+            if !reported.insert((declared_by.clone(), denied.dependency.clone())) {
                 continue;
-            };
+            }
+            let pattern = &denied_packages.patterns[denied.pattern].pattern;
+            let dependency = &denied.dependency;
 
             let (span, text) = package_name_source
                 .map(|name| name.span_and_text("package.json"))
                 .map(|(span, text)| (span, crate::into_shared_source(text)))
                 .unwrap_or_else(|| (None, NamedSource::new("package.json", Arc::from(""))));
             let (pattern_span, pattern_text) = {
-                let (span, text) = pattern.pattern.span_and_text("turbo.json");
+                let (span, text) = pattern.span_and_text("turbo.json");
                 (span, crate::into_shared_source(text))
             };
 
@@ -268,26 +326,24 @@ fn check_denied_packages<G, T>(
             if declared_by != source_package_name {
                 help.push(format!(
                     "`{source_package_name}` depends on `{declared_by}`, which declares \
-                     `{declaration_name}`"
+                     `{dependency}`"
                 ));
             }
-            if let Some(aliased_package) = aliased_package {
-                help.push(format!(
-                    "`{declaration_name}` is an alias of `{aliased_package}`"
-                ));
+            if let Some(aliased_package) = &denied.aliased_package {
+                help.push(format!("`{dependency}` is an alias of `{aliased_package}`"));
             }
 
             diagnostics.push(BoundariesDiagnostic::DeniedPackage {
                 source_package_name: source_package_name.clone(),
                 declared_by: declared_by.clone(),
-                dependency: declaration_name.to_string(),
-                dependency_kind: dependency_kind_field(declaration.kind()),
-                pattern: pattern.pattern.as_inner().clone(),
+                dependency: dependency.clone(),
+                dependency_kind: denied.dependency_kind,
+                pattern: pattern.as_inner().clone(),
                 span,
                 text,
                 help: (!help.is_empty()).then(|| help.join("\n")),
                 secondary: [SecondaryDiagnostic::DeniedPackagePattern {
-                    pattern: pattern.pattern.as_inner().clone(),
+                    pattern: pattern.as_inner().clone(),
                     span: pattern_span,
                     text: pattern_text,
                 }],
@@ -415,6 +471,9 @@ where
 struct CachedRelations<'a, 'b> {
     dependencies: &'a [&'b PackageNode],
     ancestors: &'a [&'b PackageNode],
+    /// `(declaring package, dependency)` pairs already reported as denied
+    /// packages, so a dependency denied by several rules is reported once.
+    reported_denied_packages: HashSet<(PackageName, String)>,
 }
 
 /// Check tag rules against precomputed dependency/ancestor sets.
@@ -430,7 +489,7 @@ fn check_tag_with_cache<G, T>(
     dependents: Option<&ProcessedPermissions>,
     pkg: &PackageNode,
     package_name_source: Option<&Spanned<()>>,
-    cached: &CachedRelations<'_, '_>,
+    cached: &mut CachedRelations<'_, '_>,
 ) -> Result<(), Error>
 where
     G: PackageGraphProvider,
@@ -445,6 +504,7 @@ where
                 pkg,
                 package_name_source,
                 cached.dependencies,
+                &mut cached.reported_denied_packages,
             );
         }
 
@@ -621,7 +681,10 @@ where
         if needs_dependencies(ctx, &pkg, current_package_tags, tags_rules) {
             let _span =
                 info_span!("compute_dependencies", package = %pkg.as_package_name()).entered();
-            ctx.pkg_dep_graph.dependencies(&pkg).collect()
+            let mut dependencies: Vec<_> = ctx.pkg_dep_graph.dependencies(&pkg).collect();
+            // Sort once so diagnostics are reported in a stable order.
+            dependencies.sort_unstable_by(|a, b| a.as_package_name().cmp(b.as_package_name()));
+            dependencies
         } else {
             Vec::new()
         };
@@ -634,9 +697,10 @@ where
             Vec::new()
         };
 
-    let cached = CachedRelations {
+    let mut cached = CachedRelations {
         dependencies: &cached_deps,
         ancestors: &cached_ancestors,
+        reported_denied_packages: HashSet::new(),
     };
 
     // Load boundaries config for this package (matches original behavior)
@@ -674,7 +738,7 @@ where
             dependents.as_ref(),
             &pkg,
             package_name_source,
-            &cached,
+            &mut cached,
         )?;
     }
 
@@ -696,7 +760,7 @@ where
                     rule.dependents.as_ref(),
                     &pkg,
                     package_name_source,
-                    &cached,
+                    &mut cached,
                 )?;
             }
         }
@@ -1280,9 +1344,10 @@ mod tests {
             None,
             &pkg,
             None,
-            &CachedRelations {
+            &mut CachedRelations {
                 dependencies: &cached_deps,
                 ancestors: &[],
+                reported_denied_packages: HashSet::new(),
             },
         )
         .unwrap();
@@ -1736,5 +1801,150 @@ mod tests {
         );
         let diagnostics = check_browser_package(&graph, &rules, "web");
         assert_eq!(denied_packages(&diagnostics).len(), 1);
+    }
+
+    #[test]
+    fn deny_packages_reports_dev_dependencies_of_workspace_dependencies() {
+        // Documents current behavior, which is an open design question: a
+        // devDependency of a workspace dependency is reported even though it
+        // is never installed for consumers of that dependency.
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_external(
+            "db",
+            "drizzle-kit",
+            "drizzle-kit",
+            DependencyKind::Development,
+        );
+        let (rules, _) = deny_packages_rule(&["drizzle-*"]);
+
+        let diagnostics = check_browser_package(&graph, &rules, "web");
+
+        assert_eq!(
+            denied_packages(&diagnostics),
+            vec![(
+                "db".to_string(),
+                "drizzle-kit".to_string(),
+                "devDependencies",
+                "drizzle-*".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn deny_packages_reports_each_dependency_once_across_rules() {
+        // web is tagged "browser" and "edge", both of which deny pg, and its
+        // own turbo.json denies pg as well.
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_external("db", "pg", "pg", DependencyKind::Production);
+        graph.add_external("web", "pg", "pg", DependencyKind::Development);
+
+        let mut config_diagnostics = Vec::new();
+        let rule = || Rule {
+            dependencies: Some(Spanned::new(Permissions {
+                deny_packages: Some(Spanned::new(vec![Spanned::new("pg".into())])),
+                ..Default::default()
+            })),
+            dependents: None,
+        };
+        let rules: ProcessedRulesMap = [
+            (
+                "browser".to_string(),
+                ProcessedRule::new(Spanned::new(rule()), &mut config_diagnostics),
+            ),
+            (
+                "edge".to_string(),
+                ProcessedRule::new(Spanned::new(rule()), &mut config_diagnostics),
+            ),
+        ]
+        .into();
+
+        let mut turbo_json = MockTurboJson::new();
+        turbo_json.set_tags("web", vec!["browser", "edge"]);
+        turbo_json.set_boundaries(
+            "web",
+            BoundariesConfig {
+                dependencies: rule().dependencies,
+                ..Default::default()
+            },
+        );
+        let repo_root = make_repo_root();
+        let filtered = HashSet::new();
+        let ctx = BoundariesContext {
+            repo_root: &repo_root,
+            pkg_dep_graph: &graph,
+            turbo_json_provider: &turbo_json,
+            root_boundaries_config: None,
+            filtered_pkgs: &filtered,
+        };
+        let web = PackageName::Other("web".into());
+        let tags = turbo_json.package_tags(&web);
+
+        let diagnostics = check_package_tags(
+            &ctx,
+            PackageNode::Workspace(web.clone()),
+            None,
+            tags,
+            Some(&rules),
+        )
+        .unwrap();
+
+        let mut denied: Vec<_> = denied_packages(&diagnostics)
+            .into_iter()
+            .map(|(declared_by, dependency, _, _)| (declared_by, dependency))
+            .collect();
+        denied.sort();
+        assert_eq!(
+            denied,
+            vec![
+                ("db".to_string(), "pg".to_string()),
+                ("web".to_string(), "pg".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn deny_packages_caches_matches_per_declaring_package() {
+        // web and admin both depend on db. A shared tag rule matches db's
+        // declarations once and reuses them for both packages.
+        let mut graph = MockGraph::new();
+        graph.add_package("web");
+        graph.add_package("admin");
+        graph.add_package("db");
+        graph.add_dep("web", "db");
+        graph.add_dep("admin", "db");
+        graph.add_external("db", "pg", "pg", DependencyKind::Production);
+        graph.add_external("db", "zod", "zod", DependencyKind::Production);
+        let (rules, _) = deny_packages_rule(&["pg"]);
+
+        for pkg in ["web", "admin"] {
+            let diagnostics = check_browser_package(&graph, &rules, pkg);
+            assert_eq!(
+                denied_packages(&diagnostics),
+                vec![(
+                    "db".to_string(),
+                    "pg".to_string(),
+                    "dependencies",
+                    "pg".to_string()
+                )],
+                "unexpected diagnostics for {pkg}"
+            );
+        }
+
+        let denied_packages = rules["browser"]
+            .dependencies
+            .as_ref()
+            .and_then(|dependencies| dependencies.deny_packages.as_ref())
+            .unwrap();
+        let cache = denied_packages.matches.lock().unwrap();
+        let mut cached: Vec<_> = cache.keys().map(|name| name.to_string()).collect();
+        cached.sort();
+        assert_eq!(cached, vec!["admin", "db", "web"]);
+        assert_eq!(cache[&PackageName::Other("db".into())].len(), 1);
     }
 }

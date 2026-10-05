@@ -1281,6 +1281,27 @@ Rules can also be added for a tag's dependents, i.e. packages that import this t
 }
 ```
 
+#### `denyPackages`
+
+A list of npm package names or globs that a tag's dependencies can't include. Only valid in `dependencies` rules.
+
+`denyPackages` is checked against the external dependencies declared in the `package.json` of the package and of every Workspace package it depends on, directly or transitively. Visit [the `boundaries` reference](/docs/reference/boundaries#denying-npm-packages) for details.
+
+```jsonc title="./turbo.json"
+{
+  "boundaries": {
+    "tags": {
+      "browser": {
+        "dependencies": {
+          // ban server-only npm packages from browser packages
+          "denyPackages": ["pg", "drizzle-*", "@aws-sdk/*"],
+        },
+      },
+    },
+  },
+}
+```
+
 ## Remote caching
 
 The global `remoteCache` option has a variety of fields for configuring remote cache usage
