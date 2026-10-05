@@ -1462,8 +1462,13 @@ mod tests {
             }))
         }
 
-        fn immediate_dependencies(&self, _: &PackageNode) -> Option<HashSet<&PackageNode>> {
-            Some(HashSet::new())
+        fn immediate_dependencies(&self, node: &PackageNode) -> Option<HashSet<&PackageNode>> {
+            Some(
+                self.dependencies
+                    .get(node)
+                    .map(|dependencies| dependencies.iter().collect())
+                    .unwrap_or_default(),
+            )
         }
 
         fn dependencies(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_> {
@@ -2006,6 +2011,105 @@ mod tests {
 
         assert_eq!(result.packages_checked, 1);
         assert_eq!(result.files_checked, 1);
+    }
+
+    /// Runs `check_boundaries` on `web` in a workspace of `web`, `ui` and
+    /// `utils` (all under `packages/`) plus a non-package `shared/` directory.
+    /// `web`'s tsconfig has a path alias into each of them and `web` depends
+    /// only on `ui`. Returns the diagnostic messages for `web`'s `source`.
+    fn check_web_with_tsconfig_aliases(source: &str) -> Vec<String> {
+        let tmp = tempfile::tempdir().unwrap();
+        // Canonicalize to match the resolver's symlink-resolved paths.
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let repo_root = AbsoluteSystemPath::new(root.to_str().unwrap()).unwrap();
+
+        for package in ["web", "ui", "utils"] {
+            let package_directory = repo_root.join_components(&["packages", package]);
+            package_directory
+                .join_component("src")
+                .create_dir_all()
+                .unwrap();
+            package_directory
+                .join_component("package.json")
+                .create_with_contents(format!(r#"{{"name":"{package}"}}"#))
+                .unwrap();
+            package_directory
+                .join_components(&["src", "index.ts"])
+                .create_with_contents("export const x = 1;\n")
+                .unwrap();
+        }
+        repo_root.join_component("shared").create_dir_all().unwrap();
+        repo_root
+            .join_components(&["shared", "index.ts"])
+            .create_with_contents("export const x = 1;\n")
+            .unwrap();
+
+        let web = repo_root.join_components(&["packages", "web"]);
+        web.join_component("tsconfig.json")
+            .create_with_contents(
+                r#"{ "compilerOptions": { "paths": {
+                    "@ui/*": ["../ui/src/*"],
+                    "@utils/*": ["../utils/src/*"],
+                    "@shared/*": ["../../shared/*"]
+                } } }"#,
+            )
+            .unwrap();
+        web.join_components(&["src", "index.ts"])
+            .create_with_contents(source)
+            .unwrap();
+
+        let packages = ["web", "ui", "utils"].map(|name| PackageName::Other(name.into()));
+        let graph = MockGraph::new(packages.to_vec())
+            .with_dependency(packages[0].as_str(), packages[1].as_str());
+        let filtered = HashSet::from([packages[0].clone()]);
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &MockTurboJson,
+                root_boundaries_config: None,
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect()
+    }
+
+    /// Regression test: a tsconfig path alias that resolves into a declared
+    /// workspace dependency is an import of that package, not an import that
+    /// leaves the package.
+    #[test]
+    fn tsconfig_alias_into_declared_workspace_dependency_is_allowed() {
+        let diagnostics = check_web_with_tsconfig_aliases("import { x } from \"@ui/index\";\n");
+
+        assert_eq!(diagnostics, Vec::<String>::new());
+    }
+
+    /// A tsconfig path alias into a workspace package that isn't a dependency
+    /// is reported as an undeclared dependency on that package.
+    #[test]
+    fn tsconfig_alias_into_undeclared_workspace_package_is_not_a_dependency() {
+        let diagnostics = check_web_with_tsconfig_aliases("import { x } from \"@utils/index\";\n");
+
+        assert_eq!(
+            diagnostics,
+            ["cannot import package `utils` because it is not a dependency"]
+        );
+    }
+
+    /// A tsconfig path alias that resolves outside of every workspace package
+    /// still leaves the package.
+    #[test]
+    fn tsconfig_alias_outside_workspace_packages_leaves_the_package() {
+        let diagnostics = check_web_with_tsconfig_aliases("import { x } from \"@shared/index\";\n");
+
+        assert_eq!(diagnostics, ["import `@shared/index` leaves the package"]);
     }
 
     #[test]
