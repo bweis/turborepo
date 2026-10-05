@@ -1,0 +1,7 @@
+{
+  "name": "@central/web",
+  "dependencies": {
+    "@central/ui-kit": "*",
+    "@central/utils": "*"
+  }
+}

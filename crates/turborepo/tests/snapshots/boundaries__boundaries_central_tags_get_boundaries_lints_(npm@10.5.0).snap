@@ -1,0 +1,36 @@
+---
+source: crates/turborepo/tests/boundaries.rs
+expression: query_output
+---
+{
+  "data": {
+    "boundaries": {
+      "items": [
+        {
+          "message": "Package `@central/admin` found with tag listed in denylist for `@central/utils`: `app`",
+          "import": "@central/admin",
+          "path": "turbo.json",
+          "reason": "app"
+        },
+        {
+          "message": "Package `@central/admin` found without any tag listed in allowlist for `@central/web`",
+          "import": "@central/admin",
+          "path": "turbo.json",
+          "reason": null
+        },
+        {
+          "message": "Package `@central/db` found with tag listed in denylist for `@central/ui-kit`: `server`",
+          "import": "@central/db",
+          "path": "turbo.json",
+          "reason": "server"
+        },
+        {
+          "message": "Package `@central/web` found with tag listed in denylist for `@central/utils`: `app`",
+          "import": "@central/web",
+          "path": "turbo.json",
+          "reason": "app"
+        }
+      ]
+    }
+  }
+}

@@ -14,6 +14,15 @@ export type BoundariesConfig = {
  */
 tags?: { [key in string]?: TagRules }, 
 /**
+ * Assigns tags to packages by directory glob.
+ *
+ * Keys are globs matched against package directories relative to the
+ * repository root. A package receives every tag from every glob that
+ * matches its directory, in addition to the tags in its own
+ * `turbo.json`. Only valid in the root `turbo.json`.
+ */
+packageTags?: { [key in string]?: Array<string> }, 
+/**
  * Declares any implicit dependencies, i.e. any dependency not declared in
  * a `package.json`.
  *

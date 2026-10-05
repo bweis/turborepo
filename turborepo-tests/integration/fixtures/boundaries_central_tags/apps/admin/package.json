@@ -1,0 +1,6 @@
+{
+  "name": "@central/admin",
+  "dependencies": {
+    "@central/web": "*"
+  }
+}

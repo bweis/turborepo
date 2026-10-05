@@ -22,6 +22,16 @@ pub struct BoundariesConfig {
     #[ts(optional)]
     pub tags: Option<Spanned<RulesMap>>,
 
+    /// Assigns tags to packages by directory glob.
+    ///
+    /// Keys are globs matched against package directories relative to the
+    /// repository root. A package receives every tag from every glob that
+    /// matches its directory, in addition to the tags in its own
+    /// `turbo.json`. Only valid in the root `turbo.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub package_tags: Option<Spanned<PackageTagsMap>>,
+
     /// Declares any implicit dependencies, i.e. any dependency not declared in
     /// a `package.json`.
     ///
@@ -75,6 +85,10 @@ impl BoundariesConfig {
             .is_none_or(|import_checks| *import_checks.as_inner())
     }
 }
+
+/// A map of package directory globs to the tags assigned to matching
+/// packages.
+pub type PackageTagsMap = BTreeMap<String, Spanned<Vec<Spanned<String>>>>;
 
 /// A map of tag names to their boundary rules.
 pub type RulesMap = BTreeMap<String, Spanned<Rule>>;
@@ -159,6 +173,15 @@ impl WithMetadata for BoundariesConfig {
             permissions.add_text(text.clone());
             permissions.value.add_text(text.clone());
         }
+        self.package_tags.add_text(text.clone());
+        if let Some(package_tags) = &mut self.package_tags {
+            for tags in package_tags.as_inner_mut().values_mut() {
+                tags.add_text(text.clone());
+                for tag in tags.as_inner_mut() {
+                    tag.add_text(text.clone());
+                }
+            }
+        }
         self.import_checks.add_text(text);
     }
 
@@ -188,6 +211,15 @@ impl WithMetadata for BoundariesConfig {
         {
             permissions.add_path(path.clone());
             permissions.value.add_path(path.clone());
+        }
+        self.package_tags.add_path(path.clone());
+        if let Some(package_tags) = &mut self.package_tags {
+            for tags in package_tags.as_inner_mut().values_mut() {
+                tags.add_path(path.clone());
+                for tag in tags.as_inner_mut() {
+                    tag.add_path(path.clone());
+                }
+            }
         }
         self.import_checks.add_path(path);
     }

@@ -39,6 +39,7 @@ unrs_resolver = { workspace = true }
 wax = { workspace = true }
 
 [dev-dependencies]
+biome_json_parser = { workspace = true }
 dunce = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
