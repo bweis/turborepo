@@ -7729,6 +7729,7 @@ dependencies = [
  "biome_deserialize",
  "biome_deserialize_macros",
  "biome_diagnostics",
+ "biome_json_parser",
  "camino",
  "dunce",
  "globwalk",
@@ -7757,6 +7758,7 @@ dependencies = [
  "turborepo-repository",
  "turborepo-ui",
  "unrs_resolver",
+ "wax",
 ]
 
 [[package]]

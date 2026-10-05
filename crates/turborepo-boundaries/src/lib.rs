@@ -3,6 +3,7 @@
 
 mod config;
 mod imports;
+mod package_tags;
 mod tags;
 
 use std::{
@@ -12,7 +13,7 @@ use std::{
     sync::Arc,
 };
 
-pub use config::{BoundariesConfig, Permissions, Rule, RulesMap};
+pub use config::{BoundariesConfig, PackageTagsMap, Permissions, Rule, RulesMap};
 use globwalk::{Settings, ValidatedGlob};
 use indicatif::ProgressBar;
 use miette::{Diagnostic, NamedSource, Report, SourceSpan};
@@ -34,7 +35,7 @@ use turborepo_repository::{
 use turborepo_ui::{BOLD_GREEN, BOLD_RED, ColorConfig, color};
 use unrs_resolver::Resolver;
 
-use crate::imports::DependencyLocations;
+use crate::{imports::DependencyLocations, package_tags::PackageTagIndex};
 
 #[derive(Clone)]
 pub struct PackageScope<'a> {
@@ -169,6 +170,23 @@ pub enum BoundariesDiagnostic {
     #[error("Package boundaries rules cannot have `tags` key")]
     PackageBoundariesHasTags {
         #[label("tags defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+    },
+    #[error("Package boundaries rules cannot have `packageTags` key")]
+    #[diagnostic(help("`packageTags` can only be used in the root `turbo.json`"))]
+    PackageBoundariesHasPackageTags {
+        #[label("packageTags defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+    },
+    #[error("Invalid glob `{glob}` in `boundaries.packageTags`: {reason}")]
+    InvalidPackageTagsGlob {
+        glob: String,
+        reason: String,
+        #[label("tags assigned to this glob")]
         span: Option<SourceSpan>,
         #[source_code]
         text: NamedSource<Arc<str>>,
@@ -569,6 +587,19 @@ impl BoundariesChecker {
             }
         }
 
+        let package_tags = {
+            let _span = info_span!("resolve_package_tags").entered();
+            let resolved = PackageTagIndex::resolve(
+                ctx.turbo_json_provider,
+                ctx.root_boundaries_config
+                    .and_then(|boundaries| boundaries.package_tags.as_ref()),
+                packages.iter().map(|scope| (&scope.name, scope.directory)),
+            );
+            result.diagnostics.extend(resolved.diagnostics);
+            result.warnings.extend(resolved.warnings);
+            resolved.index
+        };
+
         let global_implicit_dependencies = ctx
             .turbo_json_provider
             .implicit_dependencies(&PackageName::Root);
@@ -605,6 +636,7 @@ impl BoundariesChecker {
                                     *package_name_source,
                                     package_directory,
                                     &rules_map,
+                                    &package_tags,
                                     &global_implicit_dependencies,
                                 )
                             })
@@ -645,6 +677,7 @@ impl BoundariesChecker {
         package_name_source: Option<&Spanned<()>>,
         package_directory: &turbopath::AnchoredSystemPath,
         tag_rules: &Option<ProcessedRulesMap>,
+        package_tags: &PackageTagIndex,
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
     ) -> Result<BoundariesResult, Error>
     where
@@ -664,15 +697,17 @@ impl BoundariesChecker {
         )?;
         result.merge(file_result);
 
-        // Only check package tags if turbo.json exists for this package
-        if ctx.turbo_json_provider.has_turbo_json(package_name) {
+        // Packages without a turbo.json can still be subject to tag rules if
+        // the root turbo.json assigns them tags through `packageTags`.
+        let current_package_tags = package_tags.get(package_name);
+        if current_package_tags.is_some() || ctx.turbo_json_provider.has_turbo_json(package_name) {
             let _span = info_span!("check_package_tags", package = %package_name).entered();
-            let package_tags = ctx.turbo_json_provider.package_tags(package_name);
             result.diagnostics.extend(tags::check_package_tags(
                 ctx,
+                package_tags,
                 PackageNode::Workspace(package_name.clone()),
                 package_name_source,
-                package_tags,
+                current_package_tags,
                 tag_rules.as_ref(),
             )?);
         }
@@ -1033,6 +1068,7 @@ mod tests {
         aggregates: HashSet<PackageName>,
         authoritative_directories: HashMap<PackageName, turbopath::AnchoredSystemPathBuf>,
         definition_paths: HashMap<PackageName, turbopath::AnchoredSystemPathBuf>,
+        dependencies: HashMap<PackageNode, Vec<PackageNode>>,
     }
 
     impl MockGraph {
@@ -1068,7 +1104,16 @@ mod tests {
                 aggregates: HashSet::new(),
                 authoritative_directories,
                 definition_paths,
+                dependencies: HashMap::new(),
             }
+        }
+
+        fn with_dependency(mut self, from: &str, to: &str) -> Self {
+            self.dependencies
+                .entry(PackageNode::Workspace(PackageName::Other(from.into())))
+                .or_default()
+                .push(PackageNode::Workspace(PackageName::Other(to.into())));
+            self
         }
 
         fn with_aggregate(mut self, name: PackageName) -> Self {
@@ -1122,12 +1167,18 @@ mod tests {
             Some(HashSet::new())
         }
 
-        fn dependencies(&self, _: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_> {
-            Box::new(std::iter::empty())
+        fn dependencies(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_> {
+            Box::new(self.dependencies.get(node).into_iter().flatten())
         }
 
-        fn ancestors(&self, _: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_> {
-            Box::new(std::iter::empty())
+        fn ancestors(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_> {
+            let node = node.clone();
+            Box::new(
+                self.dependencies
+                    .iter()
+                    .filter(move |(_, dependencies)| dependencies.contains(&node))
+                    .map(|(dependent, _)| dependent),
+            )
         }
 
         fn find_cycles(&self) -> Vec<Vec<PackageName>> {
@@ -1444,6 +1495,119 @@ mod tests {
 
         assert_eq!(result.packages_checked, 1);
         assert_eq!(result.files_checked, 1);
+    }
+
+    fn root_boundaries_config(json: &str) -> BoundariesConfig {
+        use turborepo_errors::WithMetadata;
+
+        let (config, errors) = turborepo_errors::json::deserialize_from_json_str::<BoundariesConfig>(
+            json,
+            biome_json_parser::JsonParserOptions::default(),
+            "turbo.json",
+        );
+        assert!(errors.is_empty(), "invalid test config");
+        let mut config = config.unwrap();
+        config.add_text(Arc::from(json));
+        config.add_path("turbo.json".into());
+        config
+    }
+
+    #[test]
+    fn central_tags_apply_to_packages_without_turbo_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let storefront = PackageName::Other("storefront".into());
+        let unsafe_lib = PackageName::Other("unsafe-lib".into());
+        let graph = MockGraph::new(vec![storefront.clone(), unsafe_lib.clone()])
+            .with_directory(storefront.clone(), "apps/storefront")
+            .with_directory(unsafe_lib.clone(), "packages/unsafe-lib")
+            .with_dependency("storefront", "unsafe-lib");
+        let config = root_boundaries_config(
+            r#"{
+                "packageTags": {
+                    "apps/*": ["web"],
+                    "packages/unsafe-*": ["unsafe"]
+                },
+                "tags": {
+                    "web": { "dependencies": { "deny": ["unsafe"] } }
+                }
+            }"#,
+        );
+        let filtered = HashSet::from([storefront, unsafe_lib]);
+
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &MockTurboJson,
+                root_boundaries_config: Some(&config),
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let BoundariesDiagnostic::DeniedTag {
+            source_package_name,
+            package_name,
+            tag,
+            span,
+            text,
+            ..
+        } = &result.diagnostics[0]
+        else {
+            panic!("expected denied-tag diagnostic");
+        };
+        assert_eq!(source_package_name.as_str(), "storefront");
+        assert_eq!(package_name.as_str(), "unsafe-lib");
+        assert_eq!(tag, "unsafe");
+        // The offending tag is reported where it is assigned: the root
+        // turbo.json's `packageTags`.
+        assert_eq!(text.name(), "turbo.json");
+        let span = span.unwrap();
+        let assigned = &text.inner()[span.offset()..span.offset() + span.len()];
+        assert_eq!(assigned, "\"unsafe\"");
+        let assigned_in = &text.inner()[..span.offset()];
+        assert!(assigned_in.ends_with(r#""packages/unsafe-*": ["#));
+    }
+
+    #[test]
+    fn package_tags_problems_are_reported_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let web = PackageName::Other("web".into());
+        let graph = MockGraph::new(vec![web.clone()]);
+        let config = root_boundaries_config(
+            r#"{ "packageTags": { "packages/[": ["broken"], "services/*": ["service"] } }"#,
+        );
+        let filtered = HashSet::from([web]);
+
+        let result = BoundariesChecker::check_boundaries(
+            &BoundariesContext {
+                repo_root,
+                pkg_dep_graph: &graph,
+                turbo_json_provider: &MockTurboJson,
+                root_boundaries_config: Some(&config),
+                filtered_pkgs: &filtered,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(matches!(
+            &result.diagnostics[0],
+            BoundariesDiagnostic::InvalidPackageTagsGlob { glob, .. } if glob == "packages/["
+        ));
+        assert_eq!(
+            result.warnings,
+            vec![
+                "`boundaries.packageTags` glob `services/*` does not match any package directory"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

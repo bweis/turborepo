@@ -22,6 +22,16 @@ pub struct BoundariesConfig {
     #[ts(optional)]
     pub tags: Option<Spanned<RulesMap>>,
 
+    /// Assigns tags to packages by directory glob.
+    ///
+    /// Keys are globs matched against package directories relative to the
+    /// repository root. A package receives every tag from every glob that
+    /// matches its directory, in addition to the tags in its own
+    /// `turbo.json`. Only valid in the root `turbo.json`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub package_tags: Option<Spanned<PackageTagsMap>>,
+
     /// Declares any implicit dependencies, i.e. any dependency not declared in
     /// a `package.json`.
     ///
@@ -45,6 +55,10 @@ pub struct BoundariesConfig {
     #[ts(optional)]
     pub dependents: Option<Spanned<Permissions>>,
 }
+
+/// A map of package directory globs to the tags assigned to matching
+/// packages.
+pub type PackageTagsMap = BTreeMap<String, Spanned<Vec<Spanned<String>>>>;
 
 /// A map of tag names to their boundary rules.
 pub type RulesMap = BTreeMap<String, Spanned<Rule>>;
@@ -104,6 +118,15 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        self.package_tags.add_text(text.clone());
+        if let Some(package_tags) = &mut self.package_tags {
+            for tags in package_tags.as_inner_mut().values_mut() {
+                tags.add_text(text.clone());
+                for tag in tags.as_inner_mut() {
+                    tag.add_text(text.clone());
+                }
+            }
+        }
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -118,6 +141,15 @@ impl WithMetadata for BoundariesConfig {
         if let Some(implicit_dependencies) = &mut self.implicit_dependencies {
             for dep in implicit_dependencies.as_inner_mut() {
                 dep.add_path(path.clone());
+            }
+        }
+        self.package_tags.add_path(path.clone());
+        if let Some(package_tags) = &mut self.package_tags {
+            for tags in package_tags.as_inner_mut().values_mut() {
+                tags.add_path(path.clone());
+                for tag in tags.as_inner_mut() {
+                    tag.add_path(path.clone());
+                }
             }
         }
     }

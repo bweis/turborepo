@@ -1,0 +1,49 @@
+{
+  "boundaries": {
+    "packageTags": {
+      "apps/*": [
+        "app"
+      ],
+      "packages/ui-*": [
+        "ui"
+      ],
+      "packages/server/*": [
+        "server"
+      ],
+      "packages/**": [
+        "library"
+      ],
+      "services/*": [
+        "service"
+      ]
+    },
+    "tags": {
+      "app": {
+        "dependents": {
+          "allow": []
+        }
+      },
+      "ui": {
+        "dependencies": {
+          "deny": [
+            "server"
+          ]
+        }
+      },
+      "library": {
+        "dependencies": {
+          "allow": [
+            "library"
+          ]
+        }
+      },
+      "internal": {
+        "dependents": {
+          "deny": [
+            "app"
+          ]
+        }
+      }
+    }
+  }
+}

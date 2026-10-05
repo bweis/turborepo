@@ -7,7 +7,7 @@ use turborepo_boundaries::{BoundariesChecker, BoundariesContext};
 use turborepo_run::{boundaries::RunTurboJsonProvider, builder::RunBuilder};
 use turborepo_signals::{SignalHandler, listeners::get_signal};
 use turborepo_telemetry::events::command::CommandEventBuilder;
-use turborepo_ui::{BOLD_GREEN, color};
+use turborepo_ui::{BOLD_GREEN, LogSinks, color};
 
 use crate::{cli, cli::BoundariesIgnore, commands::CommandBase};
 
@@ -19,6 +19,10 @@ pub async fn run(
 ) -> Result<i32, cli::Error> {
     let signal = get_signal()?;
     let handler = SignalHandler::new(signal);
+
+    // Boundaries warnings are emitted through the global logger, which has no
+    // sinks until it is initialized.
+    LogSinks::new(base.color_config).init_logger();
 
     let (run, _analytics) = RunBuilder::new(base.run_builder_input()?, None)?
         .do_not_validate_engine()

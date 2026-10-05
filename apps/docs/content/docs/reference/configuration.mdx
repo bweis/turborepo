@@ -1281,6 +1281,26 @@ Rules can also be added for a tag's dependents, i.e. packages that import this t
 }
 ```
 
+### `packageTags`
+
+Assigns [Boundaries](/docs/reference/boundaries) tags to packages by directory, so packages don't need their own `turbo.json` just to declare tags. Only valid in the root `turbo.json`.
+
+```jsonc title="./turbo.json"
+{
+  "boundaries": {
+    "packageTags": {
+      "apps/web-*": ["browser"],
+      "packages/server/*": ["node"],
+      "packages/**": ["library"],
+    },
+  },
+}
+```
+
+Each key is a glob matched against package directories relative to the repository root. A package receives the tags of every glob that matches its directory, in addition to the `tags` in its own `turbo.json`. These tags are only used by `turbo boundaries`.
+
+`turbo boundaries` reports an error for invalid globs and a warning for globs that don't match any package.
+
 ## Remote caching
 
 The global `remoteCache` option has a variety of fields for configuring remote cache usage

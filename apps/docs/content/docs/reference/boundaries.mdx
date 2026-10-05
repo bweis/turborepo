@@ -104,3 +104,35 @@ Package names can also be used in place of a tag in allow and deny lists.
 Tags allow you to ensure that the wrong package isn't getting imported somewhere in your graph. These rules are
 applied even for dependencies of dependencies, so if you import a package that in turn imports another package
 with a denied tag, you will still get a rule violation.
+
+### Assigning tags by directory
+
+If your tags follow from where packages live in your repository, you can assign them from the root `turbo.json`
+with `packageTags` instead of adding a `turbo.json` to every package:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "packageTags": {
+      "apps/*": ["app"],
+      "packages/server/*": ["node"],
+      "packages/**": ["library"]
+    },
+    "tags": {
+      "library": {
+        "dependencies": {
+          "allow": ["library"]
+        }
+      }
+    }
+  }
+}
+```
+
+Each key is a glob matched against package directories relative to the repository root. A package receives the
+tags of every glob that matches its directory, combined with any `tags` in its own `turbo.json`. In this example,
+a package in `packages/server/api` has both the `node` and `library` tags.
+
+`packageTags` can only be used in the root `turbo.json`. `turbo boundaries` reports invalid globs as errors, and
+warns about globs that don't match any package so that your configuration doesn't silently drift from your
+repository's layout.

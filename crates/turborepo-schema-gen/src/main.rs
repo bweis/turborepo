@@ -251,6 +251,13 @@ fn generate_root_boundaries_config_interface() -> String {
    * can import a tag and which packages a tag can import
    */
   tags?: BoundariesRulesMap;
+  /**
+   * Assigns tags to packages by directory glob. Keys are globs matched against
+   * package directories relative to the repository root. A package receives
+   * every tag from every glob that matches its directory, in addition to the
+   * tags in its own `turbo.json`.
+   */
+  packageTags?: Record<string, Array<string>>;
 }
 
 "#
