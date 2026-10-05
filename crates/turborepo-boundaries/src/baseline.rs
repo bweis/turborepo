@@ -237,17 +237,27 @@ fn relative_file(repo_root: &AbsoluteSystemPath, path: &AbsoluteSystemPath) -> S
     }
 }
 
-/// The set of packages whose baseline entries are evaluated by a check.
+/// Rules that are only evaluated when import checks are enabled.
+const IMPORT_RULES: [&str; 3] = [
+    "import-leaves-package",
+    "package-not-found",
+    "not-type-only-import",
+];
+
+/// The set of baseline entries that are evaluated by a check.
 ///
 /// When `turbo boundaries` runs with `--filter`, packages outside of the
-/// filter are not checked, so their entries can neither be matched nor be
-/// stale, and `--update-baseline` must leave them untouched.
+/// filter are not checked, and when import checks are disabled, import rules
+/// are not checked. Entries that weren't checked can neither be matched nor
+/// be stale, and `--update-baseline` must leave them untouched.
 #[derive(Debug, Clone, Default)]
 pub struct BaselineScope {
     /// Packages that were checked. `None` means every package.
     checked: Option<HashSet<String>>,
     /// Every package that exists in the repository.
     known: HashSet<String>,
+    /// Whether import rules were skipped because import checks are disabled.
+    import_checks_skipped: bool,
 }
 
 impl BaselineScope {
@@ -266,7 +276,14 @@ impl BaselineScope {
         Self {
             checked: Some(checked.into_iter().collect()),
             known: known.into_iter().collect(),
+            import_checks_skipped: false,
         }
+    }
+
+    /// Excludes import rules from the scope when import checks are disabled.
+    pub fn with_import_checks(mut self, enabled: bool) -> Self {
+        self.import_checks_skipped = !enabled;
+        self
     }
 
     /// The scope of a boundaries check run with `ctx`.
@@ -281,6 +298,10 @@ impl BaselineScope {
                 .package_scopes()
                 .map(|scope| scope.name.to_string()),
         )
+        .with_import_checks(
+            ctx.root_boundaries_config
+                .is_none_or(BoundariesConfig::import_checks_enabled),
+        )
     }
 
     /// Whether entries for `package` are evaluated.
@@ -293,6 +314,12 @@ impl BaselineScope {
                 .as_ref()
                 .is_none_or(|checked| checked.contains(package))
             || !self.known.contains(package)
+    }
+
+    /// Whether the entry `key` of `package` is evaluated.
+    pub fn contains_entry(&self, package: &str, key: &ViolationKey) -> bool {
+        self.contains(package)
+            && !(self.import_checks_skipped && IMPORT_RULES.contains(&key.rule.as_str()))
     }
 }
 
@@ -484,15 +511,22 @@ impl Baseline {
         self.violations.is_empty()
     }
 
-    /// Returns the baseline that `--update-baseline` should write: entries for
-    /// packages outside of `scope` are preserved, entries for packages in
-    /// scope are replaced with `current`.
+    /// Returns the baseline that `--update-baseline` should write: entries
+    /// outside of `scope` are preserved, entries in scope are replaced with
+    /// `current`.
     pub fn update(&self, current: Baseline, scope: &BaselineScope) -> Baseline {
         let mut violations: BTreeMap<_, _> = self
             .violations
             .iter()
-            .filter(|(package, _)| !scope.contains(package))
-            .map(|(package, entries)| (package.clone(), entries.clone()))
+            .map(|(package, entries)| {
+                let entries: BTreeMap<_, _> = entries
+                    .iter()
+                    .filter(|(key, _)| !scope.contains_entry(package, key))
+                    .map(|(key, count)| (key.clone(), *count))
+                    .collect();
+                (package.clone(), entries)
+            })
+            .filter(|(_, entries)| !entries.is_empty())
             .collect();
         for (package, entries) in current.violations {
             let existing = violations.entry(package).or_default();
@@ -540,10 +574,10 @@ impl Baseline {
         });
 
         for (package, entries) in &self.violations {
-            if !scope.contains(package) {
-                continue;
-            }
             for (key, &baselined_count) in entries {
+                if !scope.contains_entry(package, key) {
+                    continue;
+                }
                 let found_count = found
                     .violations
                     .get(package)
@@ -912,6 +946,47 @@ mod tests {
 
         // Without a filter, the update is a full replacement.
         let updated = existing.update(Baseline::default(), &BaselineScope::all());
+        assert!(updated.is_empty());
+    }
+
+    #[test]
+    fn disabled_import_checks_scope_out_import_rules() {
+        let root = repo_root();
+        let import_violations = [
+            package_not_found(&root, "web", "apps/web/a.ts", "lodash", 0),
+            import_leaves(&root, "web", "apps/web/b.ts", "../ui"),
+        ];
+        for diagnostic in &import_violations {
+            assert!(IMPORT_RULES.contains(&diagnostic.rule_id()));
+        }
+        let mut diagnostics = import_violations.to_vec();
+        diagnostics.push(denied_tag("web", "ui", "internal"));
+        let baseline = Baseline::from_diagnostics(&root, &diagnostics);
+        let scope = BaselineScope::all().with_import_checks(false);
+
+        // Every violation was fixed, but only the tag rule was checked, so
+        // only its entry is stale.
+        let mut result = result_with(vec![]);
+        baseline.apply(&root, DEFAULT_BASELINE_PATH, &scope, &mut result);
+        assert_eq!(stale(&result), [("web", 1, 0)]);
+        assert!(
+            matches!(
+                &result.diagnostics[..],
+                [BoundariesDiagnostic::StaleBaselineEntry { entry, .. }] if entry.contains("denied-tag")
+            ),
+            "{:?}",
+            result.diagnostics
+        );
+
+        // Updating drops the fixed tag violation and keeps the import entries.
+        let updated = baseline.update(Baseline::default(), &scope);
+        assert_eq!(
+            updated,
+            Baseline::from_diagnostics(&root, &import_violations)
+        );
+
+        // With import checks enabled, every entry is in scope again.
+        let updated = baseline.update(Baseline::default(), &scope.with_import_checks(true));
         assert!(updated.is_empty());
     }
 

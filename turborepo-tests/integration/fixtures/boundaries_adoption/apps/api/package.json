@@ -1,0 +1,7 @@
+{
+  "name": "@repo/api",
+  "dependencies": {
+    "@repo/db": "*",
+    "@repo/utils": "*"
+  }
+}

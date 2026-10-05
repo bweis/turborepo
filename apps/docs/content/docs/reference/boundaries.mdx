@@ -64,6 +64,8 @@ Globs are matched relative to each package's directory. Globs in the root `turbo
 
 Ignored files aren't parsed, so none of their imports are checked, and they don't count towards the number of checked files. Negated globs (`!`) and globs that point outside the package (starting with `..`) aren't supported.
 
+If you use a [baseline](#adopting-boundaries-in-an-existing-repository), ignoring a file that has baselined violations makes those entries stale, so run `turbo boundaries --update-baseline` after adding the glob.
+
 ## Tags
 
 Boundaries also has a feature that lets you add tags to packages. These tags can be used to create rules
@@ -248,6 +250,8 @@ If you'd like to adopt tag rules before fixing every import violation, you can t
 
 With `importChecks` set to `false`, `turbo boundaries` skips reading your source files, so no import violations are reported (including the type-only import check for type declaration packages). Tag rules and circular dependency detection still run. `importChecks` defaults to `true` and can only be set in the root `turbo.json`.
 
+If you use a [baseline](#adopting-boundaries-in-an-existing-repository), its entries for import rules (`import-leaves-package`, `package-not-found`, and `not-type-only-import`) are left alone while import checks are disabled: they're not reported as stale, and `turbo boundaries --update-baseline` keeps them.
+
 ## Adopting boundaries in an existing repository
 
 Large repositories often have existing violations that can't all be fixed before enabling `turbo boundaries` in CI. A baseline file records the violations that exist today so that only new violations fail the check. Fix the recorded violations over time to ratchet the baseline down.
@@ -310,6 +314,7 @@ Circular dependencies are recorded under the root package, `//`, and identified 
 | `not-type-only-import`  | Importing a type declaration package without a type-only import         |
 | `tag-not-in-allowlist`  | Depending on, or being depended on by, a package without an allowed tag |
 | `denied-tag`            | Depending on, or being depended on by, a package with a denied tag      |
+| `denied-package`        | Depending on an npm package listed in `denyPackages`                    |
 | `circular-dependency`   | A cycle in the package graph                                            |
 
 Some problems can't be added to the baseline because they mean that code is not being checked at all: files that fail to parse, paths that aren't valid UTF-8, and invalid `boundaries` configuration. `turbo boundaries --update-baseline` still reports these and exits with an error until they're fixed.

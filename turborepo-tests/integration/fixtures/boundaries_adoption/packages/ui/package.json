@@ -1,0 +1,9 @@
+{
+  "name": "@repo/ui",
+  "dependencies": {
+    "@repo/storage": "*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}
