@@ -45,7 +45,7 @@ pub async fn run(
         Baseline::path(run.repo_root(), root_boundaries_config)?;
     // Loading the baseline before checking means a malformed baseline is
     // reported without waiting for the whole check to finish.
-    let baseline = Baseline::load(&baseline_path)?;
+    let baseline = Baseline::load(&baseline_path, &baseline_display_path)?;
     let scope = BaselineScope::from_context(&ctx);
 
     let mut result = BoundariesChecker::check_boundaries(&ctx, true)?;

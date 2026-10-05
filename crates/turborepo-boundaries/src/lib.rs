@@ -33,7 +33,7 @@ use turborepo_errors::Spanned;
 use turborepo_log::Subsystem;
 use turborepo_repository::{
     external_resolution::PackageExternalDeclarations,
-    package_graph::{PackageGraph, PackageGraphNodeKind, PackageName, PackageNode},
+    package_graph::{PackageCycle, PackageGraph, PackageGraphNodeKind, PackageName, PackageNode},
 };
 use turborepo_ui::{BOLD_GREEN, BOLD_RED, ColorConfig, color};
 use unrs_resolver::Resolver;
@@ -73,9 +73,9 @@ pub trait PackageGraphProvider: Send + Sync {
     fn dependencies(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_>;
     fn ancestors(&self, node: &PackageNode) -> Box<dyn Iterator<Item = &PackageNode> + '_>;
     /// Returns strongly connected components with more than one member,
-    /// representing circular dependency chains in the package graph.
-    /// Each inner Vec is ordered to form a cycle path.
-    fn find_cycles(&self) -> Vec<Vec<PackageName>>;
+    /// representing circular dependency chains in the package graph, each
+    /// with a representative cycle path and its full, sorted membership.
+    fn find_cycles(&self) -> Vec<PackageCycle>;
 }
 
 impl PackageGraphProvider for PackageGraph {
@@ -111,8 +111,8 @@ impl PackageGraphProvider for PackageGraph {
         Box::new(self.ancestors(node).into_iter())
     }
 
-    fn find_cycles(&self) -> Vec<Vec<PackageName>> {
-        self.find_cycles()
+    fn find_cycles(&self) -> Vec<PackageCycle> {
+        self.find_cycle_components()
     }
 }
 
@@ -266,7 +266,13 @@ pub enum BoundariesDiagnostic {
     #[error("failed to parse file {0}: {1}")]
     ParseError(AbsoluteSystemPathBuf, String),
     #[error("Circular package dependency detected: {cycle_path}")]
-    CircularDependency { cycle_path: String },
+    CircularDependency {
+        cycle_path: String,
+        /// Every package in the cycle's strongly connected component, sorted.
+        /// `cycle_path` is a single representative loop and may not visit all
+        /// of them.
+        members: Vec<String>,
+    },
     #[error(
         "Stale entry in boundaries baseline `{baseline_path}` for package `{package}`: {entry} \
          (baselined: {baselined_count}, found: {found_count})"
@@ -307,11 +313,11 @@ pub enum Error {
         "fix the file, or delete it and regenerate it with `turbo boundaries --update-baseline`"
     ))]
     InvalidBaseline { path: String, reason: String },
-    #[error(
-        "invalid `boundaries.baseline` path `{path}`: expected a path relative to the repository \
-         root"
-    )]
-    InvalidBaselinePath { path: String },
+    #[error("invalid `boundaries.baseline` path `{path}`: {reason}")]
+    #[diagnostic(help(
+        "use a path to a file inside the repository, relative to the repository root"
+    ))]
+    InvalidBaselinePath { path: String, reason: String },
     #[error("failed to serialize boundaries baseline: {0}")]
     SerializeBaseline(#[source] serde_json::Error),
 }
@@ -621,15 +627,23 @@ impl BoundariesChecker {
         {
             let _span = info_span!("find_cycles").entered();
             for cycle in ctx.pkg_dep_graph.find_cycles() {
+                let Some(first) = cycle.path.first() else {
+                    continue;
+                };
                 let cycle_path = cycle
+                    .path
                     .iter()
+                    .chain(std::iter::once(first))
                     .map(|name| name.to_string())
-                    .chain(std::iter::once(cycle[0].to_string()))
                     .collect::<Vec<_>>()
                     .join(" -> ");
+                let members = cycle.members.iter().map(|name| name.to_string()).collect();
                 result
                     .diagnostics
-                    .push(BoundariesDiagnostic::CircularDependency { cycle_path });
+                    .push(BoundariesDiagnostic::CircularDependency {
+                        cycle_path,
+                        members,
+                    });
             }
         }
 
@@ -1053,6 +1067,7 @@ mod tests {
             warnings: vec!["warn-a".into()],
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "a -> b -> a".into(),
+                members: Vec::new(),
             }],
             suppressed_by_baseline: 1,
         };
@@ -1083,6 +1098,7 @@ mod tests {
             warnings: vec!["w".into()],
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "x -> y -> x".into(),
+                members: Vec::new(),
             }],
             suppressed_by_baseline: 0,
         };
@@ -1198,7 +1214,7 @@ mod tests {
             Box::new(std::iter::empty())
         }
 
-        fn find_cycles(&self) -> Vec<Vec<PackageName>> {
+        fn find_cycles(&self) -> Vec<PackageCycle> {
             Vec::new()
         }
     }
@@ -1519,12 +1535,14 @@ mod tests {
         let mut a = BoundariesResult {
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "first".into(),
+                members: Vec::new(),
             }],
             ..Default::default()
         };
         let b = BoundariesResult {
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "second".into(),
+                members: Vec::new(),
             }],
             ..Default::default()
         };
@@ -1533,8 +1551,12 @@ mod tests {
 
         match (&a.diagnostics[0], &a.diagnostics[1]) {
             (
-                BoundariesDiagnostic::CircularDependency { cycle_path: first },
-                BoundariesDiagnostic::CircularDependency { cycle_path: second },
+                BoundariesDiagnostic::CircularDependency {
+                    cycle_path: first, ..
+                },
+                BoundariesDiagnostic::CircularDependency {
+                    cycle_path: second, ..
+                },
             ) => {
                 assert_eq!(first, "first");
                 assert_eq!(second, "second");

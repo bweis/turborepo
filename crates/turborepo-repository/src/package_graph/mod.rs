@@ -99,6 +99,17 @@ impl ExternalResolutionKnowledge {
     }
 }
 
+/// A circular dependency between packages.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PackageCycle {
+    /// A representative cycle through the strongly connected component,
+    /// rotated so the lexicographically smallest name comes first. It does not
+    /// necessarily visit every member.
+    pub path: Vec<PackageName>,
+    /// Every package in the strongly connected component, sorted.
+    pub members: Vec<PackageName>,
+}
+
 #[derive(Debug)]
 pub struct PackageGraph {
     graph: petgraph::Graph<PackageNode, DependencyKind>,
@@ -648,18 +659,42 @@ impl PackageGraph {
     /// Each inner Vec is ordered to trace a representative cycle path
     /// through the SCC, rotated so the lexicographically smallest name
     /// comes first.
+    ///
+    /// The traced path does not necessarily visit every member of the SCC;
+    /// use [`PackageGraph::find_cycle_components`] for the full membership.
     pub fn find_cycles(&self) -> Vec<Vec<PackageName>> {
+        self.find_cycle_components()
+            .into_iter()
+            .map(|cycle| cycle.path)
+            .collect()
+    }
+
+    /// Returns every strongly connected component with more than one member,
+    /// along with a representative cycle path through it. Sorted by path for
+    /// deterministic output.
+    pub fn find_cycle_components(&self) -> Vec<PackageCycle> {
         if !petgraph::algo::is_cyclic_directed(&self.graph) {
             return Vec::new();
         }
 
         let sccs = petgraph::algo::tarjan_scc(&self.graph);
-        let mut cycles: Vec<Vec<PackageName>> = sccs
+        let mut cycles: Vec<PackageCycle> = sccs
             .into_iter()
             .filter(|scc| scc.len() > 1)
             .filter_map(|scc| {
                 let scc_set: HashSet<NodeIndex> = scc.into_iter().collect();
-                self.trace_cycle_path(&scc_set)
+                let path = self.trace_cycle_path(&scc_set)?;
+                let mut members: Vec<PackageName> = scc_set
+                    .iter()
+                    .filter_map(|idx| match self.graph.node_weight(*idx)? {
+                        PackageNode::Workspace(name) if !matches!(name, PackageName::Root) => {
+                            Some(name.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                members.sort();
+                Some(PackageCycle { path, members })
             })
             .collect();
 
@@ -3433,6 +3468,18 @@ mod test {
             cycles.len(),
             1,
             "overlapping cycles should form one SCC: {cycles:?}"
+        );
+
+        // The component lists every member, even those the traced path skips.
+        let components = pkg_graph.find_cycle_components();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].path, cycles[0]);
+        assert_eq!(
+            components[0].members,
+            ["a", "b", "c", "d"]
+                .iter()
+                .map(|s| PackageName::from(*s))
+                .collect::<Vec<_>>()
         );
 
         // The traced path covers a representative cycle within the SCC.

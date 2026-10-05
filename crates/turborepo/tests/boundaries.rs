@@ -265,13 +265,15 @@ mod baseline {
         assert_status(dir, &[], 1);
         assert_status(dir, &["--update-baseline"], 0);
         let baseline: serde_json::Value = serde_json::from_str(&read_baseline(dir, BASELINE))?;
-        let root_entries = baseline["violations"]["//"]
-            .as_array()
-            .expect("cycles are recorded under the root package");
-        assert!(
-            root_entries
-                .iter()
-                .any(|entry| entry["rule"] == "circular-dependency"),
+        // Cycles are recorded under the root package, keyed by every package
+        // in the cycle.
+        assert_eq!(
+            baseline["violations"]["//"],
+            serde_json::json!([{
+                "rule": "circular-dependency",
+                "cycle": ["@repo/pkg-a", "@repo/pkg-b", "@repo/pkg-c"],
+                "count": 1
+            }]),
             "{baseline}"
         );
 
@@ -279,6 +281,60 @@ mod baseline {
         // matched even when filtering.
         assert_status(dir, &[], 0);
         assert_status(dir, &["--filter=@repo/pkg-d"], 0);
+
+        // A new package joining the existing cycle (pkg-a -> pkg-e -> pkg-a)
+        // is a new violation, even if the reported cycle path is unchanged.
+        fs::create_dir_all(dir.join("packages/pkg-e"))?;
+        fs::write(
+            dir.join("packages/pkg-e/package.json"),
+            r#"{ "name": "@repo/pkg-e", "dependencies": { "@repo/pkg-a": "*" } }"#,
+        )?;
+        edit(dir, "packages/pkg-a/package.json", |contents| {
+            contents.replace(
+                r#""@repo/pkg-b": "*""#,
+                r#""@repo/pkg-b": "*", "@repo/pkg-e": "*""#,
+            )
+        });
+        let (_, stderr) = assert_status(dir, &[], 1);
+        let squashed = squash(&stderr);
+        assert!(
+            squashed.contains(&squash("Circular package dependency detected")),
+            "{stderr}"
+        );
+        assert!(squashed.contains(&squash("Stale entry")), "{stderr}");
+
+        assert_status(dir, &["--update-baseline"], 0);
+        let baseline: serde_json::Value = serde_json::from_str(&read_baseline(dir, BASELINE))?;
+        assert_eq!(
+            baseline["violations"]["//"][0]["cycle"],
+            serde_json::json!(["@repo/pkg-a", "@repo/pkg-b", "@repo/pkg-c", "@repo/pkg-e"]),
+            "{baseline}"
+        );
+        assert_status(dir, &[], 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_baseline_path_must_stay_in_repository() -> Result<(), anyhow::Error> {
+        let tempdir = tempfile::tempdir()?;
+        let dir = tempdir.path().join("repo");
+        setup_fixture("boundaries", "npm@10.5.0", &dir, false)?;
+
+        edit(&dir, "turbo.json", |contents| {
+            contents.replacen(
+                "\"boundaries\": {",
+                "\"boundaries\": {\n    \"baseline\": \"../outside.json\",",
+                1,
+            )
+        });
+
+        let (_, stderr) = assert_status(&dir, &["--update-baseline"], 1);
+        assert!(
+            squash(&stderr).contains(&squash("invalid `boundaries.baseline` path")),
+            "{stderr}"
+        );
+        assert!(!tempdir.path().join("outside.json").exists());
 
         Ok(())
     }
