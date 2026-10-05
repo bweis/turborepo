@@ -25,12 +25,25 @@ fn test_boundaries_cli_shows_warnings() -> Result<(), anyhow::Error> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // `apps/my-app/index.ts` has an import marked with `@boundaries-ignore`,
-    // which `turbo boundaries` reports as a warning.
-    assert!(
-        stderr.contains("ignoring import on line 10 in") && stderr.contains("index.ts"),
+    // `apps/my-app/index.ts` has imports marked with `@boundaries-ignore` on
+    // lines 11, 16 and 20, which `turbo boundaries` reports as warnings naming
+    // the (1-based) line of the import.
+    let ignored_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("ignoring import on line"))
+        .collect();
+    assert_eq!(
+        ignored_lines.len(),
+        3,
         "stdout:\n{stdout}\nstderr:\n{stderr}"
     );
+    for (line, expected) in ignored_lines.iter().zip([11, 16, 20]) {
+        assert!(
+            line.contains(&format!("ignoring import on line {expected} in"))
+                && line.contains("index.ts"),
+            "expected line {expected} in {line:?}\nstderr:\n{stderr}"
+        );
+    }
 
     Ok(())
 }
