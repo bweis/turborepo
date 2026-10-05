@@ -1,0 +1,20 @@
+---
+source: crates/turborepo/tests/boundaries.rs
+expression: query_output
+---
+{
+  "data": {
+    "boundaries": {
+      "items": [
+        {
+          "message": "Package `@repo/internal` found with tag listed in denylist for `@repo/web`: `internal`",
+          "import": "@repo/internal"
+        },
+        {
+          "message": "Package boundaries rules cannot have `importChecks` key",
+          "import": null
+        }
+      ]
+    }
+  }
+}

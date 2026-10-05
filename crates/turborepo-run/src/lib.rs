@@ -1577,16 +1577,18 @@ fn query_boundary_diagnostic(
             import: None,
             reason: Some(tag),
         },
-        turborepo_boundaries::BoundariesDiagnostic::PackageBoundariesHasTags { span, text: _ } => {
-            turborepo_query_api::BoundaryDiagnostic {
-                message,
-                path: None,
-                start: span.map(|span| span.offset()),
-                end: span.map(|span| span.offset() + span.len()),
-                import: None,
-                reason: None,
-            }
-        }
+        turborepo_boundaries::BoundariesDiagnostic::PackageBoundariesHasTags { span, text: _ }
+        | turborepo_boundaries::BoundariesDiagnostic::PackageBoundariesHasImportChecks {
+            span,
+            text: _,
+        } => turborepo_query_api::BoundaryDiagnostic {
+            message,
+            path: None,
+            start: span.map(|span| span.offset()),
+            end: span.map(|span| span.offset() + span.len()),
+            import: None,
+            reason: None,
+        },
         turborepo_boundaries::BoundariesDiagnostic::CircularDependency { .. } => {
             turborepo_query_api::BoundaryDiagnostic {
                 message,

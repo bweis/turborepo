@@ -44,6 +44,27 @@ pub struct BoundariesConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dependents: Option<Spanned<Permissions>>,
+
+    /// Whether to check each package's source file imports.
+    ///
+    /// When `false`, imports are not checked for leaving the package, for
+    /// referencing undeclared dependencies, or for missing `type` qualifiers on
+    /// type declaration package imports. Tag rules and circular dependency
+    /// detection still run. Only allowed in the root `turbo.json`.
+    ///
+    /// Defaults to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub import_checks: Option<Spanned<bool>>,
+}
+
+impl BoundariesConfig {
+    /// Returns whether import checks are enabled. Defaults to `true`.
+    pub fn import_checks_enabled(&self) -> bool {
+        self.import_checks
+            .as_ref()
+            .is_none_or(|import_checks| *import_checks.as_inner())
+    }
 }
 
 /// A map of tag names to their boundary rules.
@@ -104,6 +125,7 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_text(text.clone());
             }
         }
+        self.import_checks.add_text(text);
     }
 
     fn add_path(&mut self, path: Arc<str>) {
@@ -120,6 +142,7 @@ impl WithMetadata for BoundariesConfig {
                 dep.add_path(path.clone());
             }
         }
+        self.import_checks.add_path(path);
     }
 }
 

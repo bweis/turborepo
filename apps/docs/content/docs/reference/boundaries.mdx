@@ -104,3 +104,24 @@ Package names can also be used in place of a tag in allow and deny lists.
 Tags allow you to ensure that the wrong package isn't getting imported somewhere in your graph. These rules are
 applied even for dependencies of dependencies, so if you import a package that in turn imports another package
 with a denied tag, you will still get a rule violation.
+
+## Disabling import checks
+
+If you'd like to adopt tag rules before fixing every import violation, you can turn off the import checks by setting `importChecks` to `false` in your root `turbo.json`:
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "importChecks": false,
+    "tags": {
+      "public": {
+        "dependencies": {
+          "deny": ["internal"]
+        }
+      }
+    }
+  }
+}
+```
+
+With `importChecks` set to `false`, `turbo boundaries` skips reading your source files, so no import violations are reported (including the type-only import check for type declaration packages). Tag rules and circular dependency detection still run. `importChecks` defaults to `true` and can only be set in the root `turbo.json`.

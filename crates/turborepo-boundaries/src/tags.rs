@@ -400,6 +400,13 @@ where
             };
             diagnostics.push(BoundariesDiagnostic::PackageBoundariesHasTags { span, text });
         }
+        if let Some(import_checks) = &boundaries.import_checks {
+            let (span, text) = {
+                let (span, text) = import_checks.span_and_text("turbo.json");
+                (span, crate::into_shared_source(text))
+            };
+            diagnostics.push(BoundariesDiagnostic::PackageBoundariesHasImportChecks { span, text });
+        }
         let dependencies = boundaries
             .dependencies
             .clone()
@@ -980,5 +987,39 @@ mod tests {
             diagnostics.is_empty(),
             "Root node should be skipped, producing no diagnostics"
         );
+    }
+
+    #[test]
+    fn package_boundaries_cannot_set_import_checks() {
+        let mut graph = MockGraph::new();
+        graph.add_package("pkg-a");
+
+        let mut turbo_json = MockTurboJson::new();
+        turbo_json.set_boundaries(
+            "pkg-a",
+            BoundariesConfig {
+                import_checks: Some(Spanned::new(false)),
+                ..Default::default()
+            },
+        );
+
+        let repo_root = make_repo_root();
+        let filtered = HashSet::new();
+        let ctx = BoundariesContext {
+            repo_root: &repo_root,
+            pkg_dep_graph: &graph,
+            turbo_json_provider: &turbo_json,
+            root_boundaries_config: None,
+            filtered_pkgs: &filtered,
+        };
+
+        let pkg = PackageNode::Workspace(PackageName::Other("pkg-a".into()));
+        let diagnostics = check_package_tags(&ctx, pkg, None, None, None).unwrap();
+
+        assert_eq!(diagnostics.len(), 1);
+        assert!(matches!(
+            diagnostics[0],
+            BoundariesDiagnostic::PackageBoundariesHasImportChecks { .. }
+        ));
     }
 }

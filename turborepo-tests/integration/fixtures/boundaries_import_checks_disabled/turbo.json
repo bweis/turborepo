@@ -1,0 +1,14 @@
+{
+  "boundaries": {
+    "importChecks": false,
+    "tags": {
+      "web": {
+        "dependencies": {
+          "deny": [
+            "internal"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+---
+source: crates/turborepo-turbo-json/src/lib.rs
+expression: raw_boundaries_config
+---
+{
+  "tags": {
+    "my-tag": {
+      "dependencies": {
+        "deny": [
+          "my-package"
+        ]
+      }
+    }
+  },
+  "importChecks": false
+}

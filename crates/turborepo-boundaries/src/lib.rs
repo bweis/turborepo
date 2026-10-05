@@ -173,6 +173,14 @@ pub enum BoundariesDiagnostic {
         #[source_code]
         text: NamedSource<Arc<str>>,
     },
+    #[error("Package boundaries rules cannot have `importChecks` key")]
+    #[diagnostic(help("`importChecks` can only be set in the root `turbo.json`"))]
+    PackageBoundariesHasImportChecks {
+        #[label("importChecks defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+    },
     #[error("Tag `{tag}` cannot share the same name as package `{package}`")]
     TagSharesPackageName {
         tag: String,
@@ -329,6 +337,9 @@ const PROGRESS_UPDATE_BATCH_SIZE: usize = 16;
 pub struct BoundariesResult {
     pub files_checked: usize,
     pub packages_checked: usize,
+    /// Set when import checks were disabled with `importChecks: false`, in
+    /// which case no files were checked.
+    pub import_checks_skipped: bool,
     pub warnings: Vec<String>,
     pub diagnostics: Vec<BoundariesDiagnostic>,
 }
@@ -341,6 +352,7 @@ impl BoundariesResult {
     fn merge(&mut self, other: BoundariesResult) {
         self.files_checked += other.files_checked;
         self.packages_checked += other.packages_checked;
+        self.import_checks_skipped |= other.import_checks_skipped;
         self.warnings.extend(other.warnings);
         self.diagnostics.extend(other.diagnostics);
     }
@@ -371,10 +383,17 @@ impl BoundariesResult {
             eprintln!();
         }
 
-        println!(
-            "Checked {} files in {} packages, {}",
-            self.files_checked, self.packages_checked, result_message
-        );
+        if self.import_checks_skipped {
+            println!(
+                "Checked {} packages (import checks disabled), {}",
+                self.packages_checked, result_message
+            );
+        } else {
+            println!(
+                "Checked {} files in {} packages, {}",
+                self.files_checked, self.packages_checked, result_message
+            );
+        }
     }
 }
 
@@ -551,8 +570,14 @@ impl BoundariesChecker {
     {
         let _span = info_span!("check_boundaries").entered();
         let rules_map = Self::get_processed_rules_map(ctx.root_boundaries_config);
+        let import_checks = ctx
+            .root_boundaries_config
+            .is_none_or(BoundariesConfig::import_checks_enabled);
         let packages: Vec<_> = ctx.pkg_dep_graph.package_scopes().collect();
-        let mut result = BoundariesResult::default();
+        let mut result = BoundariesResult {
+            import_checks_skipped: !import_checks,
+            ..Default::default()
+        };
 
         {
             let _span = info_span!("find_cycles").entered();
@@ -606,6 +631,7 @@ impl BoundariesChecker {
                                     package_directory,
                                     &rules_map,
                                     &global_implicit_dependencies,
+                                    import_checks,
                                 )
                             })
                             .collect::<Vec<_>>();
@@ -646,6 +672,7 @@ impl BoundariesChecker {
         package_directory: &turbopath::AnchoredSystemPath,
         tag_rules: &Option<ProcessedRulesMap>,
         global_implicit_dependencies: &HashMap<String, Spanned<()>>,
+        import_checks: bool,
     ) -> Result<BoundariesResult, Error>
     where
         G: PackageGraphProvider,
@@ -654,15 +681,17 @@ impl BoundariesChecker {
         let _span = info_span!("check_package", package = %package_name).entered();
         let mut result = BoundariesResult::default();
 
-        let implicit_dependencies = ctx.turbo_json_provider.implicit_dependencies(package_name);
-        let file_result = Self::check_package_files(
-            ctx,
-            package_name,
-            package_directory,
-            &implicit_dependencies,
-            global_implicit_dependencies,
-        )?;
-        result.merge(file_result);
+        if import_checks {
+            let implicit_dependencies = ctx.turbo_json_provider.implicit_dependencies(package_name);
+            let file_result = Self::check_package_files(
+                ctx,
+                package_name,
+                package_directory,
+                &implicit_dependencies,
+                global_implicit_dependencies,
+            )?;
+            result.merge(file_result);
+        }
 
         // Only check package tags if turbo.json exists for this package
         if ctx.turbo_json_provider.has_turbo_json(package_name) {
@@ -986,6 +1015,7 @@ mod tests {
         let mut a = BoundariesResult {
             files_checked: 5,
             packages_checked: 2,
+            import_checks_skipped: false,
             warnings: vec!["warn-a".into()],
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "a -> b -> a".into(),
@@ -994,6 +1024,7 @@ mod tests {
         let b = BoundariesResult {
             files_checked: 3,
             packages_checked: 1,
+            import_checks_skipped: true,
             warnings: vec!["warn-b1".into(), "warn-b2".into()],
             diagnostics: vec![BoundariesDiagnostic::InvalidPath {
                 path: "/bad".into(),
@@ -1004,6 +1035,7 @@ mod tests {
 
         assert_eq!(a.files_checked, 8);
         assert_eq!(a.packages_checked, 3);
+        assert!(a.import_checks_skipped);
         assert_eq!(a.warnings.len(), 3);
         assert_eq!(a.diagnostics.len(), 2);
     }
@@ -1013,6 +1045,7 @@ mod tests {
         let mut result = BoundariesResult {
             files_checked: 10,
             packages_checked: 4,
+            import_checks_skipped: false,
             warnings: vec!["w".into()],
             diagnostics: vec![BoundariesDiagnostic::CircularDependency {
                 cycle_path: "x -> y -> x".into(),
@@ -1444,6 +1477,59 @@ mod tests {
 
         assert_eq!(result.packages_checked, 1);
         assert_eq!(result.files_checked, 1);
+    }
+
+    #[test]
+    fn check_boundaries_skips_import_checks_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = AbsoluteSystemPath::new(tmp.path().to_str().unwrap()).unwrap();
+        let package_name = PackageName::Other("app".into());
+        let package_directory = repo_root.join_components(&["packages", "app"]);
+        package_directory.create_dir_all().unwrap();
+        package_directory
+            .join_component("package.json")
+            .create_with_contents(r#"{"name":"app"}"#)
+            .unwrap();
+        package_directory
+            .join_component("index.ts")
+            .create_with_contents("import 'undeclared-dependency';\nimport '../outside';\n")
+            .unwrap();
+
+        let graph = MockGraph::new(vec![package_name.clone()]);
+        let filtered = HashSet::from([package_name]);
+        let check = |import_checks: Option<bool>| {
+            let root_boundaries_config = BoundariesConfig {
+                import_checks: import_checks.map(Spanned::new),
+                ..Default::default()
+            };
+            BoundariesChecker::check_boundaries(
+                &BoundariesContext {
+                    repo_root,
+                    pkg_dep_graph: &graph,
+                    turbo_json_provider: &MockTurboJson,
+                    root_boundaries_config: Some(&root_boundaries_config),
+                    filtered_pkgs: &filtered,
+                },
+                false,
+            )
+            .unwrap()
+        };
+
+        for enabled in [None, Some(true)] {
+            let result = check(enabled);
+            assert!(!result.import_checks_skipped);
+            assert_eq!(result.files_checked, 1);
+            assert_eq!(result.diagnostics.len(), 2);
+        }
+
+        let result = check(Some(false));
+        assert!(result.import_checks_skipped);
+        assert_eq!(result.packages_checked, 1);
+        assert_eq!(result.files_checked, 0);
+        assert!(
+            result.diagnostics.is_empty(),
+            "import diagnostics should not be reported when import checks are disabled"
+        );
     }
 
     #[test]

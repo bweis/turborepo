@@ -1281,6 +1281,20 @@ Rules can also be added for a tag's dependents, i.e. packages that import this t
 }
 ```
 
+### `importChecks`
+
+Default: `true`
+
+When `false`, [`turbo boundaries`](/docs/reference/boundaries) does not check source file imports for leaving the package or referencing undeclared dependencies. Tag rules and circular dependency detection still run. Only available in the root `turbo.json`.
+
+```json title="./turbo.json"
+{
+  "boundaries": {
+    "importChecks": false
+  }
+}
+```
+
 ## Remote caching
 
 The global `remoteCache` option has a variety of fields for configuring remote cache usage
