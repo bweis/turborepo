@@ -1558,6 +1558,42 @@ fn query_boundary_diagnostic(
             import: Some(package_name.to_string()),
             reason: Some(tag),
         },
+        turborepo_boundaries::BoundariesDiagnostic::DeniedPackage {
+            dependency,
+            pattern,
+            span,
+            text,
+            ..
+        } => turborepo_query_api::BoundaryDiagnostic {
+            message,
+            path: Some(text.name().to_string()),
+            start: span.map(|span| span.offset()),
+            end: span.map(|span| span.offset() + span.len()),
+            import: Some(dependency),
+            reason: Some(pattern),
+        },
+        turborepo_boundaries::BoundariesDiagnostic::InvalidDenyPackagesPattern {
+            pattern,
+            span,
+            ..
+        } => turborepo_query_api::BoundaryDiagnostic {
+            message,
+            path: None,
+            start: span.map(|span| span.offset()),
+            end: span.map(|span| span.offset() + span.len()),
+            import: None,
+            reason: Some(pattern),
+        },
+        turborepo_boundaries::BoundariesDiagnostic::DenyPackagesInDependents { span, .. } => {
+            turborepo_query_api::BoundaryDiagnostic {
+                message,
+                path: None,
+                start: span.map(|span| span.offset()),
+                end: span.map(|span| span.offset() + span.len()),
+                import: None,
+                reason: None,
+            }
+        }
         turborepo_boundaries::BoundariesDiagnostic::InvalidPath { path } => {
             turborepo_query_api::BoundaryDiagnostic {
                 message,

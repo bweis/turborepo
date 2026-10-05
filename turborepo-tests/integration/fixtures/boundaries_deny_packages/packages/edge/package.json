@@ -1,0 +1,7 @@
+{
+  "name": "@repo/edge",
+  "dependencies": {
+    "lodash": "^4.0.0",
+    "lodash-es": "^4.0.0"
+  }
+}

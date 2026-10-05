@@ -20,7 +20,7 @@ use oxc_ast::ast::Comment;
 use oxc_span::Span;
 use oxc_syntax::module_record::ModuleRecord;
 use rayon::prelude::*;
-pub use tags::{ProcessedPermissions, ProcessedRule, ProcessedRulesMap};
+pub use tags::{DeniedPackages, ProcessedPermissions, ProcessedRule, ProcessedRulesMap};
 use thiserror::Error;
 use tracing::{debug_span, info_span};
 use turbo_trace::{ImportResult, ImportTraceType, ImportType, Tracer, find_imports};
@@ -162,6 +162,14 @@ pub enum SecondaryDiagnostic {
         #[source_code]
         text: NamedSource<Arc<str>>,
     },
+    #[error("denied by `{pattern}` in `denyPackages`")]
+    DeniedPackagePattern {
+        pattern: String,
+        #[label]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+    },
 }
 
 #[derive(Clone, Debug, Error, Diagnostic)]
@@ -226,6 +234,52 @@ pub enum BoundariesDiagnostic {
         text: NamedSource<Arc<str>>,
         #[related]
         secondary: [SecondaryDiagnostic; 1],
+    },
+    #[error(
+        "Package `{source_package_name}` depends on denied package `{dependency}` (declared in \
+         `{dependency_kind}` of `{declared_by}`)"
+    )]
+    DeniedPackage {
+        // The package whose rules deny the dependency
+        source_package_name: PackageName,
+        // The workspace package whose package.json declares the dependency. Either
+        // the source package itself or one of its transitive workspace dependencies.
+        declared_by: PackageName,
+        // The dependency as declared in package.json (the alias for npm aliases)
+        dependency: String,
+        // The package.json field the dependency is declared in
+        dependency_kind: &'static str,
+        // The `denyPackages` entry that matched
+        pattern: String,
+        #[label("package defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+        #[help]
+        help: Option<String>,
+        #[related]
+        secondary: [SecondaryDiagnostic; 1],
+    },
+    #[error("Invalid `denyPackages` pattern `{pattern}`: {reason}")]
+    InvalidDenyPackagesPattern {
+        pattern: String,
+        reason: String,
+        #[label("pattern defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
+    },
+    #[error("`denyPackages` can only be used in `dependencies` rules")]
+    #[diagnostic(help(
+        "`denyPackages` restricts the npm packages that a package and its workspace dependencies \
+         depend on. To restrict which packages can depend on this one, use `allow` or `deny` with \
+         tags or package names."
+    ))]
+    DenyPackagesInDependents {
+        #[label("`denyPackages` defined here")]
+        span: Option<SourceSpan>,
+        #[source_code]
+        text: NamedSource<Arc<str>>,
     },
     #[error(
         "importing from a type declaration package, but import is not declared as a type-only \
@@ -585,15 +639,16 @@ impl BoundariesChecker {
         T: TurboJsonProvider,
     {
         let _span = info_span!("check_boundaries").entered();
-        let rules_map = Self::get_processed_rules_map(ctx.root_boundaries_config);
         let import_checks = ctx
             .root_boundaries_config
             .is_none_or(BoundariesConfig::import_checks_enabled);
-        let packages: Vec<_> = ctx.pkg_dep_graph.package_scopes().collect();
         let mut result = BoundariesResult {
             import_checks_skipped: !import_checks,
             ..Default::default()
         };
+        let rules_map =
+            Self::get_processed_rules_map(ctx.root_boundaries_config, &mut result.diagnostics);
+        let packages: Vec<_> = ctx.pkg_dep_graph.package_scopes().collect();
 
         {
             let _span = info_span!("find_cycles").entered();
@@ -684,13 +739,14 @@ impl BoundariesChecker {
 
     fn get_processed_rules_map(
         root_boundaries_config: Option<&BoundariesConfig>,
+        diagnostics: &mut Vec<BoundariesDiagnostic>,
     ) -> Option<ProcessedRulesMap> {
         root_boundaries_config
             .and_then(|boundaries| boundaries.tags.as_ref())
             .map(|tags| {
                 tags.as_inner()
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.clone().into()))
+                    .map(|(k, v)| (k.clone(), ProcessedRule::new(v.clone(), diagnostics)))
                     .collect()
             })
     }

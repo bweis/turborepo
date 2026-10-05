@@ -1,0 +1,9 @@
+{
+  "boundaries": {
+    "dependencies": {
+      "denyPackages": [
+        "lodash"
+      ]
+    }
+  }
+}

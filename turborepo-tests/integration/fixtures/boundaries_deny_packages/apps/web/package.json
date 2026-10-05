@@ -1,0 +1,10 @@
+{
+  "name": "@repo/web",
+  "dependencies": {
+    "@repo/ui": "*",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.0"
+  }
+}

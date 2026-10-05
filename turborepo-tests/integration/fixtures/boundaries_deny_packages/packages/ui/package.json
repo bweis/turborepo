@@ -1,0 +1,11 @@
+{
+  "name": "@repo/ui",
+  "dependencies": {
+    "@repo/db": "*",
+    "@repo/utils": "*",
+    "pg-format": "^1.0.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@repo/db",
+  "dependencies": {
+    "pg": "^8.0.0",
+    "@types/pg": "^8.0.0"
+  }
+}

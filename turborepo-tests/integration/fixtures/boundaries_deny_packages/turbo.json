@@ -1,0 +1,22 @@
+{
+  "boundaries": {
+    "tags": {
+      "browser": {
+        "dependencies": {
+          "denyPackages": [
+            "pg",
+            "@aws-sdk/*",
+            "drizzle-*"
+          ]
+        }
+      },
+      "server": {
+        "dependents": {
+          "denyPackages": [
+            "pg"
+          ]
+        }
+      }
+    }
+  }
+}

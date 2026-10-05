@@ -34,6 +34,15 @@ dependencies?: Permissions,
  */
 dependents?: Permissions, 
 /**
+ * Globs for files that should be skipped by the import checks.
+ *
+ * Globs are relative to the package directory. In the root `turbo.json`
+ * they apply to every package, and in a package's `turbo.json` they apply
+ * to that package in addition to the root globs. Useful for generated
+ * files that cannot carry `@boundaries-ignore` comments.
+ */
+ignore?: Array<string>, 
+/**
  * Whether to check each package's source file imports.
  *
  * When `false`, imports are not checked for leaving the package, for
